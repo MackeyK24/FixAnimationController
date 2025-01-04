@@ -1,3 +1,10 @@
+# REPO
+
+https://github.com/MackeyK24/FixAnimationController/
+
+
+# GOALS
+
 Using Babylon.js, please create a system similar to Unity's Animator Controller using Blend Trees
 the `AnimationState.ts` script is an existing implementation I previously created to Mimic
 Unity's Animation Controller functionallity for Babylon.js. It uses the `babylon.toolkit.d.ts`
@@ -49,4 +56,5 @@ Please evaluate `machine.json` file from the repo to understand the structure of
 MOST IMPORTANT... All the information you need is in the `machine.json` machine object which is currently working using my legacy TOOLKIT.AnimationState class. It just has performance issues, hence us making a new TOOLKIT.AnimationController from scratch to fix those issues.
 
 # DOCUMENTATION
+
 Be sure to create and update the Documentaion.md with complete details and usage examples.
