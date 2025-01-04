@@ -1,0 +1,19 @@
+{
+  "name": "fixanimationcontroller",
+  "version": "1.0.0",
+  "description": "Using Babylon.js, please create a system similar to Unity's Animator Controller using Blend Trees the `AnimationState.ts` script is an existing implementation I previously created to Mimic Unity's Animation Controller functionallity for Babylon.js. It uses the `babylon.toolkit.d.ts` runtime library that provides Unity-Like functionallity for babylon.js. It works, but it is CPU intensive and stutters a bit when using blend trees but I think lerping the weights should smooth that out.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^22.10.5",
+    "babylonjs": "^7.42.0",
+    "typescript": "^5.7.2"
+  }
+}
