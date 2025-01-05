@@ -193,12 +193,20 @@ export namespace TOOLKIT {
         }
 
         // Parameter getters/setters
+        public hasFloat(name: string): boolean {
+            return (this._parameters.get(name) != null);
+        }
+
         public getFloat(name: string): number {
             return this._parameters.get(name) || 0;
         }
 
         public setFloat(name: string, value: number): void {
             this._parameters.set(name, value);
+        }
+
+        public hasBool(name: string): boolean {
+            return (this._parameters.get(name) != null);
         }
 
         public getBool(name: string): boolean {
@@ -209,12 +217,20 @@ export namespace TOOLKIT {
             this._parameters.set(name, value);
         }
 
+        public hasInteger(name: string): boolean {
+            return (this._parameters.get(name) != null);
+        }
+
         public getInteger(name: string): number {
             return Math.floor(this._parameters.get(name)) || 0;
         }
 
         public setInteger(name: string, value: number): void {
             this._parameters.set(name, Math.floor(value));
+        }
+
+        public hasTrigger(name: string): boolean {
+            return (this._parameters.get(name) != null);
         }
 
         public setTrigger(name: string): void {
@@ -624,7 +640,7 @@ export namespace TOOLKIT {
             );
 
             if (rootAnim) {
-                const time = this._currentTime % rootAnim.animation.frameEnd;
+                const time = this._currentTime % rootAnim.animation.getHighestFrame();
 
                 // Extract position
                 if (rootAnim.animation.targetProperty === "position") {
