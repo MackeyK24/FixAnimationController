@@ -1,6 +1,6 @@
 import * as BABYLON from 'babylonjs';
 
-export namespace TOOLKIT {
+namespace TOOLKIT {
     // Enums
     export enum BlendTreeType {
         Simple1D = 0,
