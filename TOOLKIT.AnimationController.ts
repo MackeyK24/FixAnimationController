@@ -233,6 +233,10 @@ namespace TOOLKIT {
             return (this._parameters.get(name) != null);
         }
 
+        public getTrigger(name: string): boolean {
+            return this._parameters.get(name) || false;
+        }
+
         public setTrigger(name: string): void {
             this._parameters.set(name, true);
         }
