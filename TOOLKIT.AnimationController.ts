@@ -335,15 +335,24 @@ namespace TOOLKIT {
         }
 
         public finalizeAnimations(rootNode: BABYLON.TransformNode): void {
-            if (!rootNode) return;
+            if (!rootNode) {
+                console.log(`[AnimationLayer] Skipping finalize, root node is null`);
+                return;
+            }
 
             const state = this._stateMachine.getCurrentState();
-            if (!state || state.isEmpty) return;
+            if (!state || state.isEmpty) {
+                console.log(`[AnimationLayer] Skipping finalize, state is empty or null`);
+                return;
+            }
 
+            console.log(`[AnimationLayer] Finalizing animations for state: ${state.name}`);
             // Apply animations based on avatar mask
             if (this._avatarMask) {
+                console.log(`[AnimationLayer] Applying masked animations`);
                 this.applyMaskedAnimations(rootNode);
             } else {
+                console.log(`[AnimationLayer] Applying full animations`);
                 this.applyFullAnimations(rootNode);
             }
         }
@@ -383,6 +392,13 @@ namespace TOOLKIT {
         private _states: Map<string, AnimationState> = new Map();
         private _transitions: ITransition[] = [];
         private _anyStateTransitions: ITransition[] = [];
+        private _activeTransition: {
+            source: AnimationState;
+            target: AnimationState;
+            duration: number;
+            offset: number;
+            time: number;
+        } | null = null;
         private _animationGroups: Map<string, BABYLON.AnimationGroup>;
         private _parameters: Map<string, any>;
         private _speedRatio: number;
@@ -400,16 +416,26 @@ namespace TOOLKIT {
             this._parameters = parameters;
             this._speedRatio = speedRatio;
             
+            // Initialize transitions
+            this._transitions = machine.transitions.filter(t => !t.isExit);
+            this._anyStateTransitions = machine.transitions.filter(t => t.isExit);
+            
             // Initialize with entry state
             this.setState(entryState);
         }
 
         public update(deltaTime: number): void {
+            console.log(`[StateMachine] Updating state machine`);
+            
             // Check transitions
             this.checkTransitions();
 
+            // Update transition blend if active
+            this.updateTransitionBlend(deltaTime * this._speedRatio);
+
             // Update current state
             if (this._currentState) {
+                console.log(`[StateMachine] Updating state: ${this._currentState.name}`);
                 this._currentState.update(deltaTime * this._speedRatio);
             }
         }
@@ -451,7 +477,23 @@ namespace TOOLKIT {
         }
 
         public applyAnimationToNode(node: BABYLON.TransformNode, weight: number): void {
-            this._currentState?.applyToNode(node, weight);
+            if (this._activeTransition) {
+                // Calculate transition progress
+                const t = Math.min(1, this._activeTransition.time / this._activeTransition.duration);
+                
+                // Apply source state with decreasing weight
+                if (this._activeTransition.source && !this._activeTransition.source.isEmpty) {
+                    this._activeTransition.source.applyToNode(node, weight * (1 - t));
+                }
+                
+                // Apply target state with increasing weight
+                if (this._activeTransition.target && !this._activeTransition.target.isEmpty) {
+                    this._activeTransition.target.applyToNode(node, weight * t);
+                }
+            } else if (this._currentState) {
+                // No transition, apply current state directly
+                this._currentState.applyToNode(node, weight);
+            }
         }
 
         private checkTransitions(): void {
@@ -504,8 +546,60 @@ namespace TOOLKIT {
         }
 
         private executeTransition(transition: ITransition): void {
-            if (transition.destination) {
-                this.setState(transition.destination);
+            if (!transition.destination) return;
+
+            const sourceState = this._currentState;
+            const targetState = this._states.get(transition.destination) || 
+                              new AnimationState(
+                                  transition.destination,
+                                  this._machine.states.find(s => s.name === transition.destination)!,
+                                  this._animationGroups,
+                                  this._parameters,
+                                  this._speedRatio
+                              );
+
+            if (sourceState) {
+                // Start transition blend
+                const blendDuration = transition.duration;
+                const blendOffset = transition.offset;
+                let blendTime = 0;
+
+                // Create transition blend state
+                const transitionState = {
+                    source: sourceState,
+                    target: targetState,
+                    duration: blendDuration,
+                    offset: blendOffset,
+                    time: blendTime
+                };
+
+                // Store transition state for blending in update
+                this._activeTransition = transitionState;
+            }
+
+            // Set new state
+            this._currentState = targetState;
+            this._currentState.enter();
+        }
+
+        private updateTransitionBlend(deltaTime: number): void {
+            if (!this._activeTransition) return;
+
+            // Update transition time
+            this._activeTransition.time += deltaTime;
+            const t = Math.min(1, this._activeTransition.time / this._activeTransition.duration);
+
+            // Apply both states with proper weights
+            if (this._activeTransition.source && !this._activeTransition.source.isEmpty) {
+                this._activeTransition.source.update(deltaTime);
+            }
+            if (this._activeTransition.target && !this._activeTransition.target.isEmpty) {
+                this._activeTransition.target.update(deltaTime);
+            }
+
+            // Clear transition when complete
+            if (t >= 1) {
+                this._activeTransition = null;
             }
         }
     }
@@ -522,6 +616,10 @@ namespace TOOLKIT {
 
         private _rootMotionPosition: BABYLON.Vector3 = new BABYLON.Vector3();
         private _rootMotionRotation: BABYLON.Quaternion = new BABYLON.Quaternion();
+
+        public get name(): string {
+            return this._name;
+        }
 
         constructor(
             name: string,
@@ -551,7 +649,8 @@ namespace TOOLKIT {
                     timescale: 1,
                     directBlendParameter: "",
                     weight: 1,
-                    subtree: null
+                    subtree: null,
+                    loop: true  // Default to looping for single motion states
                 };
 
                 const singleBlendTree: IBlendTree = {
@@ -591,17 +690,22 @@ namespace TOOLKIT {
         }
 
         public update(deltaTime: number): void {
-            if (this._isEmpty) return;
+            if (this._isEmpty) {
+                console.log(`[AnimationState] State ${this._name} is empty, skipping update`);
+                return;
+            }
 
             this._currentTime += deltaTime;
 
             // Update blend tree if exists
             if (this._blendTree) {
+                console.log(`[AnimationState] Updating blend tree for state ${this._name}`);
                 this._blendTree.update(deltaTime);
             }
 
             // Extract root motion if animation group exists
             if (this._animationGroup) {
+                console.log(`[AnimationState] Extracting root motion for state ${this._name}`);
                 this.extractRootMotion();
             }
         }
@@ -614,11 +718,17 @@ namespace TOOLKIT {
         }
 
         public applyToNode(node: BABYLON.TransformNode, weight: number): void {
-            if (this._isEmpty) return;
+            if (this._isEmpty) {
+                console.log(`[AnimationState] Skipping empty state ${this.name}`);
+                return;
+            }
 
+            console.log(`[AnimationState] Applying state ${this.name} with weight: ${weight}`);
             if (this._blendTree) {
+                console.log(`[AnimationState] Using blend tree for ${this.name}`);
                 this._blendTree.applyToNode(node, weight);
             } else if (this._animationGroup) {
+                console.log(`[AnimationState] Using direct animation for ${this.name}`);
                 this.sampleAndApplyAnimation(node, weight);
             }
         }
@@ -761,16 +871,24 @@ namespace TOOLKIT {
         }
 
         public update(deltaTime: number): void {
+            console.log(`[BlendTree] Updating blend tree with ${this._children.length} children`);
+            
             // Update weights based on parameters
             this.calculateWeights();
 
             // Update children
-            this._children.forEach(child => child.update(deltaTime));
+            this._children.forEach(child => {
+                console.log(`[BlendTree] Updating child with weight: ${child.weight}`);
+                child.update(deltaTime);
+            });
         }
 
         public applyToNode(node: BABYLON.TransformNode, layerWeight: number): void {
+            console.log(`[BlendTree] Applying animations with ${this._children.length} children and layer weight: ${layerWeight}`);
             this._children.forEach(child => {
-                child.applyToNode(node, child.weight * layerWeight);
+                const finalWeight = child.weight * layerWeight;
+                console.log(`[BlendTree] Applying child animation with weight: ${finalWeight} (child: ${child.weight} * layer: ${layerWeight})`);
+                child.applyToNode(node, finalWeight);
             });
         }
 
@@ -938,7 +1056,17 @@ namespace TOOLKIT {
 
         public update(deltaTime: number): void {
             if (!this._animationGroup) return;
+            
+            // Update time
             this._currentTime += deltaTime * this._timescale;
+            
+            // Handle non-looping animations
+            if (!this._loop) {
+                const maxFrame = this._animationGroup.to;
+                if (this._currentTime >= maxFrame) {
+                    this._currentTime = maxFrame;
+                }
+            }
         }
 
         public applyToNode(node: BABYLON.TransformNode, weight: number): void {
@@ -949,11 +1077,12 @@ namespace TOOLKIT {
                     const animation = targetAnim.animation;
                     const keyFrames = animation.getKeys();
                     const maxFrame = keyFrames[keyFrames.length - 1].frame;
+                    const LOOP_BLEND_THRESHOLD = 0.15; // Blend in last 15% of animation
                     let time: number;
                     
                     if (this._loop) {
-                        const normalizedTime = (this._currentTime * this._timescale) % maxFrame;
-                        const blendThreshold = maxFrame * 0.1; // Blend in last 10% of animation
+                        const normalizedTime = this._currentTime % maxFrame;
+                        const blendThreshold = maxFrame * LOOP_BLEND_THRESHOLD;
                         
                         if (normalizedTime > maxFrame - blendThreshold) {
                             // We're near the end of the animation, blend with start
@@ -964,52 +1093,60 @@ namespace TOOLKIT {
                             const endValue = this.sampleAnimationAtTime(animation, normalizedTime);
                             const startValue = this.sampleAnimationAtTime(animation, normalizedTime % blendThreshold);
                             
-                            // Blend between end and start
-                            if (animation.targetProperty === "rotationQuaternion") {
-                                BABYLON.Quaternion.SlerpToRef(endValue as BABYLON.Quaternion, startValue as BABYLON.Quaternion, startWeight, endValue as BABYLON.Quaternion);
-                                this.applyRotationAnimation(node, animation, 0, weight, endValue as BABYLON.Quaternion);
-                            } else {
-                                BABYLON.Vector3.LerpToRef(endValue as BABYLON.Vector3, startValue as BABYLON.Vector3, startWeight, endValue as BABYLON.Vector3);
-                                if (animation.targetProperty === "position") {
-                                    this.applyPositionAnimation(node, animation, 0, weight, endValue as BABYLON.Vector3);
-                                } else {
-                                    this.applyScalingAnimation(node, animation, 0, weight, endValue as BABYLON.Vector3);
-                                }
-                            }
+                            // Apply smooth loop blending
+                            this.applyBlendedValue(node, animation, endValue, startValue, startWeight, weight);
                             return;
                         }
                         time = normalizedTime;
                     } else {
-                        time = Math.min(this._currentTime * this._timescale, maxFrame);
+                        // For non-looping animations, clamp to end
+                        time = Math.min(this._currentTime, maxFrame);
+                        
+                        // If we're at the end, reduce weight to zero
+                        if (time >= maxFrame) {
+                            weight *= Math.max(0, 1 - (time - maxFrame));
+                        }
                     }
 
                     // Sample and apply animation at calculated time
-                    switch (animation.targetProperty) {
-                        case "position":
-                            this.applyPositionAnimation(node, animation, time, weight);
-                            break;
-                        case "rotationQuaternion":
-                            this.applyRotationAnimation(node, animation, time, weight);
-                            break;
-                        case "scaling":
-                            this.applyScalingAnimation(node, animation, time, weight);
-                            break;
-                    }
-
-                    // Sample and apply animation
-                    switch (animation.targetProperty) {
-                        case "position":
-                            this.applyPositionAnimation(node, animation, time, weight);
-                            break;
-                        case "rotationQuaternion":
-                            this.applyRotationAnimation(node, animation, time, weight);
-                            break;
-                        case "scaling":
-                            this.applyScalingAnimation(node, animation, time, weight);
-                            break;
-                    }
+                    const value = this.sampleAnimationAtTime(animation, time);
+                    this.applyBlendedValue(node, animation, value, value, 0, weight);
                 }
             });
+        }
+
+        private applyBlendedValue(
+            node: BABYLON.TransformNode,
+            animation: BABYLON.Animation,
+            endValue: BABYLON.Vector3 | BABYLON.Quaternion,
+            startValue: BABYLON.Vector3 | BABYLON.Quaternion,
+            blendWeight: number,
+            weight: number
+        ): void {
+            // Blend between values
+            if (animation.targetProperty === "rotationQuaternion") {
+                const result = new BABYLON.Quaternion();
+                BABYLON.Quaternion.SlerpToRef(
+                    endValue as BABYLON.Quaternion,
+                    startValue as BABYLON.Quaternion,
+                    blendWeight,
+                    result
+                );
+                this.applyRotationAnimation(node, animation, 0, weight, result);
+            } else {
+                const result = new BABYLON.Vector3();
+                BABYLON.Vector3.LerpToRef(
+                    endValue as BABYLON.Vector3,
+                    startValue as BABYLON.Vector3,
+                    blendWeight,
+                    result
+                );
+                if (animation.targetProperty === "position") {
+                    this.applyPositionAnimation(node, animation, 0, weight, result);
+                } else {
+                    this.applyScalingAnimation(node, animation, 0, weight, result);
+                }
+            }
         }
 
         private applyPositionAnimation(
