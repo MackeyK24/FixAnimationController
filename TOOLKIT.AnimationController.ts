@@ -40,6 +40,14 @@ namespace TOOLKIT {
         layers: IAnimationLayer[];
         parameters: IParameter[];
         transitions: ITransition[];
+        states: IState[];
+    }
+
+    export interface IState {
+        name: string;
+        hash: number;
+        motion?: string;
+        blendtree?: IBlendTree;
     }
 
     export interface IParameter {
@@ -86,8 +94,8 @@ namespace TOOLKIT {
         name: string;
         blendType: BlendTreeType;
         children: IBlendTreeChild[];
-        blendParameterX: string;
-        blendParameterY: string;
+        blendParameterX: string | null;
+        blendParameterY: string | null;
         minThreshold: number;
         maxThreshold: number;
     }
@@ -101,8 +109,9 @@ namespace TOOLKIT {
         threshold: number;
         timescale: number;
         weight: number;
-        directBlendParameter: string;
-        subtree: IBlendTree;
+        directBlendParameter: string | null;
+        subtree: IBlendTree | null;
+        loop?: boolean;
     }
 
     // Main Animation Controller Class
@@ -162,6 +171,7 @@ namespace TOOLKIT {
             // Initialize layers
             this._layers = machine.layers.map(layerData => {
                 return new AnimationLayer(
+                    machine,
                     layerData,
                     this._animationGroups,
                     this._parameters,
@@ -285,13 +295,16 @@ namespace TOOLKIT {
         private _animationGroups: Map<string, BABYLON.AnimationGroup>;
         private _parameters: Map<string, any>;
         private _speedRatio: number;
+        private _machine: IMachine;
 
         constructor(
+            machine: IMachine,
             layerData: IAnimationLayer,
             animationGroups: Map<string, BABYLON.AnimationGroup>,
             parameters: Map<string, any>,
             speedRatio: number
         ) {
+            this._machine = machine;
             this._avatarMask = layerData.avatarMask;
             this._defaultWeight = layerData.defaultWeight;
             this._animationGroups = animationGroups;
@@ -300,6 +313,7 @@ namespace TOOLKIT {
             
             // Initialize state machine
             this._stateMachine = new StateMachine(
+                this._machine,
                 layerData.entry,
                 this._animationGroups,
                 this._parameters,
@@ -372,13 +386,16 @@ namespace TOOLKIT {
         private _animationGroups: Map<string, BABYLON.AnimationGroup>;
         private _parameters: Map<string, any>;
         private _speedRatio: number;
+        private _machine: IMachine;
 
         constructor(
+            machine: IMachine,
             entryState: string,
             animationGroups: Map<string, BABYLON.AnimationGroup>,
             parameters: Map<string, any>,
             speedRatio: number
         ) {
+            this._machine = machine;
             this._animationGroups = animationGroups;
             this._parameters = parameters;
             this._speedRatio = speedRatio;
@@ -399,9 +416,18 @@ namespace TOOLKIT {
 
         public setState(stateName: string): void {
             if (!this._states.has(stateName)) {
+                // Get state data from machine configuration
+                const stateData = this._machine.states.find(s => s.name === stateName);
+                if (!stateData) {
+                    console.warn(`State ${stateName} not found in machine configuration`);
+                    return;
+                }
+                
                 this._states.set(stateName, new AnimationState(
                     stateName,
-                    this._animationGroups.get(stateName),
+                    stateData,
+                    this._animationGroups,
+                    this._parameters,
                     this._speedRatio
                 ));
             }
@@ -492,19 +518,61 @@ namespace TOOLKIT {
         private _speedRatio: number;
         private _blendTree: BlendTree | null = null;
         private _isEmpty: boolean;
+        private _parameters: Map<string, any>;
 
         private _rootMotionPosition: BABYLON.Vector3 = new BABYLON.Vector3();
         private _rootMotionRotation: BABYLON.Quaternion = new BABYLON.Quaternion();
 
         constructor(
             name: string,
-            animationGroup: BABYLON.AnimationGroup | null,
+            stateData: any,
+            animationGroups: Map<string, BABYLON.AnimationGroup>,
+            parameters: Map<string, any>,
             speedRatio: number
         ) {
             this._name = name;
-            this._animationGroup = animationGroup;
+            this._parameters = parameters;
             this._speedRatio = speedRatio;
-            this._isEmpty = !animationGroup;
+
+            // Initialize blend tree based on state data
+            if (stateData.blendtree) {
+                // State has a blend tree defined
+                this._blendTree = new BlendTree(stateData.blendtree, parameters, animationGroups);
+                this._isEmpty = false;
+            } else if (stateData.motion) {
+                // Single motion state - create a simple blend tree
+                const singleChildData: IBlendTreeChild = {
+                    hash: stateData.hash || 0,
+                    type: MotionType.Clip,
+                    motion: stateData.motion,
+                    positionX: 0,
+                    positionY: 0,
+                    threshold: 0,
+                    timescale: 1,
+                    directBlendParameter: "",
+                    weight: 1,
+                    subtree: null
+                };
+
+                const singleBlendTree: IBlendTree = {
+                    hash: stateData.hash || 0,
+                    name: `${name}_SingleMotion`,
+                    blendType: BlendTreeType.Simple1D,
+                    children: [singleChildData],
+                    blendParameterX: null,
+                    blendParameterY: null,
+                    minThreshold: 0,
+                    maxThreshold: 1
+                };
+
+                this._blendTree = new BlendTree(singleBlendTree, parameters, animationGroups);
+                this._animationGroup = animationGroups.get(stateData.motion) || null;
+                this._isEmpty = !this._animationGroup;
+            } else {
+                // Empty state
+                this._animationGroup = null;
+                this._isEmpty = true;
+            }
         }
 
         public get isEmpty(): boolean {
@@ -667,8 +735,8 @@ namespace TOOLKIT {
     class BlendTree {
         private _type: BlendTreeType;
         private _children: BlendTreeChild[] = [];
-        private _parameterX: string;
-        private _parameterY: string;
+        private _parameterX: string | null;
+        private _parameterY: string | null;
         private _minThreshold: number;
         private _maxThreshold: number;
         private _parameters: Map<string, any>;
@@ -686,10 +754,10 @@ namespace TOOLKIT {
             this._parameters = parameters;
 
             // Initialize children
-            this._children = data.children.map(child => new BlendTreeChild(
-                child,
-                animationGroups.get(child.motion)
-            ));
+            this._children = data.children.map(child => {
+                const animGroup = animationGroups.get(child.motion);
+                return new BlendTreeChild(child, animGroup || null);
+            });
         }
 
         public update(deltaTime: number): void {
@@ -707,8 +775,8 @@ namespace TOOLKIT {
         }
 
         private calculateWeights(): void {
-            const paramX = this._parameters.get(this._parameterX) || 0;
-            const paramY = this._parameters.get(this._parameterY) || 0;
+            const paramX = this._parameterX ? (this._parameters.get(this._parameterX) || 0) : 0;
+            const paramY = this._parameterY ? (this._parameters.get(this._parameterY) || 0) : 0;
 
             switch (this._type) {
                 case BlendTreeType.Simple1D:
@@ -719,6 +787,20 @@ namespace TOOLKIT {
                     break;
                 case BlendTreeType.FreeformCartesian2D:
                     this.calculate2DCartesianWeights(paramX, paramY);
+                    break;
+                case BlendTreeType.Direct:
+                    // For direct blend trees, weights are set directly through parameters
+                    this._children.forEach(child => {
+                        if (child.directBlendParameter) {
+                            child.weight = this._parameters.get(child.directBlendParameter) || 0;
+                        }
+                    });
+                    break;
+                case BlendTreeType.Clip:
+                    // Single motion clip, full weight
+                    if (this._children.length > 0) {
+                        this._children[0].weight = 1;
+                    }
                     break;
             }
         }
@@ -829,6 +911,9 @@ namespace TOOLKIT {
         private _threshold: number;
         private _weight: number = 0;
         private _currentTime: number = 0;
+        private _directBlendParameter: string | null = null;
+        private _loop: boolean = true;
+        private _timescale: number = 1;
 
         constructor(
             data: IBlendTreeChild,
@@ -838,6 +923,9 @@ namespace TOOLKIT {
             this._positionX = data.positionX;
             this._positionY = data.positionY;
             this._threshold = data.threshold;
+            this._directBlendParameter = data.directBlendParameter;
+            this._loop = data.loop !== undefined ? data.loop : true;
+            this._timescale = data.timescale || 1;
         }
 
 
@@ -846,10 +934,11 @@ namespace TOOLKIT {
         public get threshold(): number { return this._threshold; }
         public get weight(): number { return this._weight; }
         public set weight(value: number) { this._weight = value; }
+        public get directBlendParameter(): string | null { return this._directBlendParameter; }
 
         public update(deltaTime: number): void {
             if (!this._animationGroup) return;
-            this._currentTime += deltaTime;
+            this._currentTime += deltaTime * this._timescale;
         }
 
         public applyToNode(node: BABYLON.TransformNode, weight: number): void {
@@ -858,7 +947,54 @@ namespace TOOLKIT {
             this._animationGroup.targetedAnimations.forEach(targetAnim => {
                 if (targetAnim.target === node) {
                     const animation = targetAnim.animation;
-                    const time = this._currentTime % (animation.getKeys()[animation.getKeys().length - 1].frame);
+                    const keyFrames = animation.getKeys();
+                    const maxFrame = keyFrames[keyFrames.length - 1].frame;
+                    let time: number;
+                    
+                    if (this._loop) {
+                        const normalizedTime = (this._currentTime * this._timescale) % maxFrame;
+                        const blendThreshold = maxFrame * 0.1; // Blend in last 10% of animation
+                        
+                        if (normalizedTime > maxFrame - blendThreshold) {
+                            // We're near the end of the animation, blend with start
+                            const endWeight = (maxFrame - normalizedTime) / blendThreshold;
+                            const startWeight = 1 - endWeight;
+                            
+                            // Sample both end and start of animation
+                            const endValue = this.sampleAnimationAtTime(animation, normalizedTime);
+                            const startValue = this.sampleAnimationAtTime(animation, normalizedTime % blendThreshold);
+                            
+                            // Blend between end and start
+                            if (animation.targetProperty === "rotationQuaternion") {
+                                BABYLON.Quaternion.SlerpToRef(endValue as BABYLON.Quaternion, startValue as BABYLON.Quaternion, startWeight, endValue as BABYLON.Quaternion);
+                                this.applyRotationAnimation(node, animation, 0, weight, endValue as BABYLON.Quaternion);
+                            } else {
+                                BABYLON.Vector3.LerpToRef(endValue as BABYLON.Vector3, startValue as BABYLON.Vector3, startWeight, endValue as BABYLON.Vector3);
+                                if (animation.targetProperty === "position") {
+                                    this.applyPositionAnimation(node, animation, 0, weight, endValue as BABYLON.Vector3);
+                                } else {
+                                    this.applyScalingAnimation(node, animation, 0, weight, endValue as BABYLON.Vector3);
+                                }
+                            }
+                            return;
+                        }
+                        time = normalizedTime;
+                    } else {
+                        time = Math.min(this._currentTime * this._timescale, maxFrame);
+                    }
+
+                    // Sample and apply animation at calculated time
+                    switch (animation.targetProperty) {
+                        case "position":
+                            this.applyPositionAnimation(node, animation, time, weight);
+                            break;
+                        case "rotationQuaternion":
+                            this.applyRotationAnimation(node, animation, time, weight);
+                            break;
+                        case "scaling":
+                            this.applyScalingAnimation(node, animation, time, weight);
+                            break;
+                    }
 
                     // Sample and apply animation
                     switch (animation.targetProperty) {
@@ -880,9 +1016,10 @@ namespace TOOLKIT {
             node: BABYLON.TransformNode,
             animation: BABYLON.Animation,
             time: number,
-            weight: number
+            weight: number,
+            precomputedValue?: BABYLON.Vector3
         ): void {
-            const value = this.sampleVector3Animation(animation, time);
+            const value = precomputedValue || this.sampleVector3Animation(animation, time);
             if (node.position) {
                 BABYLON.Vector3.LerpToRef(node.position, value, weight, node.position);
             }
@@ -892,9 +1029,10 @@ namespace TOOLKIT {
             node: BABYLON.TransformNode,
             animation: BABYLON.Animation,
             time: number,
-            weight: number
+            weight: number,
+            precomputedValue?: BABYLON.Quaternion
         ): void {
-            const value = this.sampleQuaternionAnimation(animation, time);
+            const value = precomputedValue || this.sampleQuaternionAnimation(animation, time);
             if (node.rotationQuaternion) {
                 BABYLON.Quaternion.SlerpToRef(
                     node.rotationQuaternion,
@@ -909,25 +1047,21 @@ namespace TOOLKIT {
             node: BABYLON.TransformNode,
             animation: BABYLON.Animation,
             time: number,
-            weight: number
+            weight: number,
+            precomputedValue?: BABYLON.Vector3
         ): void {
-            const value = this.sampleVector3Animation(animation, time);
+            const value = precomputedValue || this.sampleVector3Animation(animation, time);
             if (node.scaling) {
                 BABYLON.Vector3.LerpToRef(node.scaling, value, weight, node.scaling);
             }
         }
 
-        private sampleVector3Animation(
-            animation: BABYLON.Animation,
-            time: number
-        ): BABYLON.Vector3 {
-            const result = new BABYLON.Vector3();
-            
-            // Find keyframes
+        private sampleAnimationAtTime(animation: BABYLON.Animation, time: number): BABYLON.Vector3 | BABYLON.Quaternion {
             const keyFrames = animation.getKeys();
             let prevFrame = keyFrames[0];
             let nextFrame = keyFrames[0];
 
+            // Find surrounding keyframes
             for (let i = 0; i < keyFrames.length; i++) {
                 if (keyFrames[i].frame <= time && (!keyFrames[i + 1] || keyFrames[i + 1].frame > time)) {
                     prevFrame = keyFrames[i];
@@ -936,37 +1070,27 @@ namespace TOOLKIT {
                 }
             }
 
-            // Interpolate between keyframes
+            // Calculate interpolation factor
             const t = (time - prevFrame.frame) / (nextFrame.frame - prevFrame.frame);
-            BABYLON.Vector3.LerpToRef(prevFrame.value, nextFrame.value, t, result);
 
-            return result;
+            // Create result based on animation type
+            if (animation.targetProperty === "rotationQuaternion") {
+                const result = new BABYLON.Quaternion();
+                BABYLON.Quaternion.SlerpToRef(prevFrame.value, nextFrame.value, t, result);
+                return result;
+            } else {
+                const result = new BABYLON.Vector3();
+                BABYLON.Vector3.LerpToRef(prevFrame.value, nextFrame.value, t, result);
+                return result;
+            }
         }
 
-        private sampleQuaternionAnimation(
-            animation: BABYLON.Animation,
-            time: number
-        ): BABYLON.Quaternion {
-            const result = new BABYLON.Quaternion();
-            
-            // Find keyframes
-            const keyFrames = animation.getKeys();
-            let prevFrame = keyFrames[0];
-            let nextFrame = keyFrames[0];
+        private sampleVector3Animation(animation: BABYLON.Animation, time: number): BABYLON.Vector3 {
+            return this.sampleAnimationAtTime(animation, time) as BABYLON.Vector3;
+        }
 
-            for (let i = 0; i < keyFrames.length; i++) {
-                if (keyFrames[i].frame <= time && (!keyFrames[i + 1] || keyFrames[i + 1].frame > time)) {
-                    prevFrame = keyFrames[i];
-                    nextFrame = keyFrames[i + 1] || keyFrames[0];
-                    break;
-                }
-            }
-
-            // Interpolate between keyframes
-            const t = (time - prevFrame.frame) / (nextFrame.frame - prevFrame.frame);
-            BABYLON.Quaternion.SlerpToRef(prevFrame.value, nextFrame.value, t, result);
-
-            return result;
+        private sampleQuaternionAnimation(animation: BABYLON.Animation, time: number): BABYLON.Quaternion {
+            return this.sampleAnimationAtTime(animation, time) as BABYLON.Quaternion;
         }
     }
 }
