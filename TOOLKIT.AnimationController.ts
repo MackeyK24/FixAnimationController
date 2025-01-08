@@ -261,14 +261,28 @@ namespace TOOLKIT {
             this._rootMotionMatrix.setAll(0);
 
             // Finalize each layer's animations
+            // Only pass rootTransform if root motion is enabled or if we have a valid transform
+            const shouldUseRootTransform = this._applyRootMotion || (this._rootTransform != null);
             this._layers.forEach(layer => {
-                layer.finalizeAnimations(this._rootTransform);
+                layer.finalizeAnimations(shouldUseRootTransform ? this._rootTransform : undefined);
             });
 
-            // Apply root motion if enabled
-            if (this._applyRootMotion && this._rootTransform) {
+            // Apply root motion if enabled and we have a valid root transform
+            if (this._applyRootMotion) {
+                if (!this._rootTransform) {
+                    console.log(`[AnimationController] Root motion is enabled but no root transform provided, skipping root motion application`);
+                    return;
+                }
                 const rootMotion = this._layers[0]?.getRootMotion();
-                if (rootMotion && this._rootTransform.rotationQuaternion) {
+                if (!rootMotion) {
+                    console.log(`[AnimationController] No root motion data available from base layer`);
+                    return;
+                }
+                if (!this._rootTransform.rotationQuaternion) {
+                    console.log(`[AnimationController] Root transform has no rotation quaternion, skipping root motion rotation`);
+                    this._rootTransform.position.addInPlace(rootMotion.position);
+                } else {
+                    console.log(`[AnimationController] Applying root motion position and rotation to transform`);
                     this._rootTransform.position.addInPlace(rootMotion.position);
                     this._rootTransform.rotationQuaternion.multiplyInPlace(rootMotion.rotation);
                 }
@@ -278,6 +292,7 @@ namespace TOOLKIT {
 
     // Animation Layer Class
     class AnimationLayer {
+        private _name: string;
         private _stateMachine: StateMachine;
         private _avatarMask: IAvatarMask;
         private _defaultWeight: number;
@@ -292,6 +307,7 @@ namespace TOOLKIT {
             parameters: Map<string, any>,
             speedRatio: number
         ) {
+            this._name = layerData.name;
             this._avatarMask = layerData.avatarMask;
             this._defaultWeight = layerData.defaultWeight;
             this._animationGroups = animationGroups;
@@ -320,11 +336,17 @@ namespace TOOLKIT {
             return this._stateMachine.getRootMotion();
         }
 
-        public finalizeAnimations(rootNode: BABYLON.TransformNode): void {
-            if (!rootNode) return;
+        public finalizeAnimations(rootNode?: BABYLON.TransformNode): void {
+            if (!rootNode) {
+                console.log(`[AnimationLayer] No root node provided for animation application. Layer: ${this._name}, Weight: ${this._defaultWeight}`);
+                return;
+            }
 
             const state = this._stateMachine.getCurrentState();
-            if (!state || state.isEmpty) return;
+            if (!state || state.isEmpty) {
+                console.log(`[AnimationLayer] No valid state or empty state, skipping animation application`);
+                return;
+            }
 
             // Apply animations based on avatar mask
             if (this._avatarMask) {
@@ -334,29 +356,46 @@ namespace TOOLKIT {
             }
         }
 
-        private applyMaskedAnimations(rootNode: BABYLON.TransformNode): void {
+        private applyMaskedAnimations(rootNode?: BABYLON.TransformNode): void {
+            if (!rootNode) {
+                console.log(`[AnimationLayer] No root node provided for masked animations. Layer: ${this._name}, Mask Paths: ${this._avatarMask.transformPaths.length}`);
+                return;
+            }
+
             // Filter and apply animations only to masked bones
             const transformPaths = this._avatarMask.transformPaths;
             transformPaths.forEach(path => {
-                const node = this.findNodeByPath(rootNode, path);
+                const node = this.findNodeByPath(path, rootNode);
                 if (node) {
                     this._stateMachine.applyAnimationToNode(node, this._defaultWeight);
+                } else {
+                    console.log(`[AnimationLayer] Could not find node at path: ${path}`);
                 }
             });
         }
 
-        private applyFullAnimations(rootNode: BABYLON.TransformNode): void {
+        private applyFullAnimations(rootNode?: BABYLON.TransformNode): void {
+            if (!rootNode) {
+                console.log(`[AnimationLayer] No root node provided for full animations, skipping`);
+                return;
+            }
+
             // Apply animations to all bones
             this._stateMachine.applyAnimationToNode(rootNode, this._defaultWeight);
         }
 
-        private findNodeByPath(root: BABYLON.TransformNode, path: string): BABYLON.TransformNode | null {
+        private findNodeByPath(path: string, root?: BABYLON.TransformNode): BABYLON.TransformNode | null {
+            if (!root) {
+                console.log(`[AnimationLayer] Cannot find node by path: ${path}, root node is undefined`);
+                return null;
+            }
+
             const parts = path.split('/');
-            let current: BABYLON.Node = root;
+            let current: BABYLON.Node | null = root;
 
             for (const part of parts) {
-                current = current.getChildren((node) => node.name === part, false)[0];
                 if (!current) return null;
+                current = current.getChildren((node) => node.name === part, false)[0] || null;
             }
 
             return current as BABYLON.TransformNode;
@@ -401,7 +440,7 @@ namespace TOOLKIT {
             if (!this._states.has(stateName)) {
                 this._states.set(stateName, new AnimationState(
                     stateName,
-                    this._animationGroups.get(stateName),
+                    this._animationGroups.get(stateName) || null,
                     this._speedRatio
                 ));
             }
@@ -688,7 +727,7 @@ namespace TOOLKIT {
             // Initialize children
             this._children = data.children.map(child => new BlendTreeChild(
                 child,
-                animationGroups.get(child.motion)
+                animationGroups.get(child.motion) || null
             ));
         }
 
