@@ -90,6 +90,7 @@ namespace TOOLKIT {
         blendParameterY: string;
         minThreshold: number;
         maxThreshold: number;
+        looping?: boolean;
     }
 
     export interface IBlendTreeChild {
@@ -102,7 +103,8 @@ namespace TOOLKIT {
         timescale: number;
         weight: number;
         directBlendParameter: string;
-        subtree: IBlendTree;
+        subtree?: IBlendTree;
+        looping?: boolean;
     }
 
     // Main Animation Controller Class
@@ -165,7 +167,8 @@ namespace TOOLKIT {
                     layerData,
                     this._animationGroups,
                     this._parameters,
-                    this._speedRatio
+                    this._speedRatio,
+                    machine
                 );
             });
 
@@ -311,7 +314,8 @@ namespace TOOLKIT {
             layerData: IAnimationLayer,
             animationGroups: Map<string, BABYLON.AnimationGroup>,
             parameters: Map<string, any>,
-            speedRatio: number
+            speedRatio: number,
+            machineData: { [key: string]: any }
         ) {
             this._name = layerData.name;
             this._avatarMask = layerData.avatarMask;
@@ -320,12 +324,13 @@ namespace TOOLKIT {
             this._parameters = parameters;
             this._speedRatio = speedRatio;
             
-            // Initialize state machine
+            // Initialize state machine with machine data
             this._stateMachine = new StateMachine(
                 layerData.entry,
                 this._animationGroups,
                 this._parameters,
-                this._speedRatio
+                this._speedRatio,
+                machineData
             );
         }
 
@@ -424,16 +429,19 @@ namespace TOOLKIT {
         private _animationGroups: Map<string, BABYLON.AnimationGroup>;
         private _parameters: Map<string, any>;
         private _speedRatio: number;
+        private _machineData: { [key: string]: any }; // Store machine.json data
 
         constructor(
             entryState: string,
             animationGroups: Map<string, BABYLON.AnimationGroup>,
             parameters: Map<string, any>,
-            speedRatio: number
+            speedRatio: number,
+            machineData: { [key: string]: any } // Add machine data parameter
         ) {
             this._animationGroups = animationGroups;
             this._parameters = parameters;
             this._speedRatio = speedRatio;
+            this._machineData = machineData;
             
             // Initialize with entry state
             this.setState(entryState);
@@ -451,10 +459,36 @@ namespace TOOLKIT {
 
         public setState(stateName: string): void {
             if (!this._states.has(stateName)) {
+                // Find state data in machine.json
+                const stateData = this._machineData.states?.find((state: any) => state.name === stateName);
+                const blendTreeData = stateData?.blendtree || {
+                    hash: 0,
+                    name: stateName,
+                    blendType: BlendTreeType.Direct,
+                    children: [{
+                        hash: 0,
+                        type: MotionType.Clip,
+                        motion: stateName,
+                        positionX: 0,
+                        positionY: 0,
+                        threshold: 0,
+                        timescale: 1,
+                        weight: 1,
+                        directBlendParameter: "",
+                        subtree: null
+                    }],
+                    blendParameterX: "",
+                    blendParameterY: "",
+                    minThreshold: 0,
+                    maxThreshold: 1
+                };
+
                 this._states.set(stateName, new AnimationState(
                     stateName,
                     this._animationGroups.get(stateName) || null,
-                    this._speedRatio
+                    this._speedRatio,
+                    blendTreeData,
+                    this._parameters
                 ));
             }
 
@@ -545,6 +579,8 @@ namespace TOOLKIT {
         private _speedRatio: number;
         private _blendTree: BlendTree | null = null;
         private _isEmpty: boolean;
+        private _parameters: Map<string, any>;
+        private _isLooping: boolean = true; // Default to true for backward compatibility
 
         private _rootMotionPosition: BABYLON.Vector3 = new BABYLON.Vector3();
         private _rootMotionRotation: BABYLON.Quaternion = new BABYLON.Quaternion();
@@ -552,12 +588,58 @@ namespace TOOLKIT {
         constructor(
             name: string,
             animationGroup: BABYLON.AnimationGroup | null,
-            speedRatio: number
+            speedRatio: number,
+            blendTreeData: IBlendTree,
+            parameters: Map<string, any>
         ) {
             this._name = name;
             this._animationGroup = animationGroup;
             this._speedRatio = speedRatio;
-            this._isEmpty = !animationGroup;
+            this._parameters = parameters || new Map<string, any>();
+            
+            // Initialize blend tree
+            // Create a map with just this animation
+            const animationMap = new Map<string, BABYLON.AnimationGroup>();
+            if (animationGroup) {
+                animationMap.set(name, animationGroup);
+            }
+
+            // Always create a blend tree, either from provided data or as a single motion
+            if (blendTreeData) {
+                console.log(`[AnimationState] Creating blend tree for state "${name}" with ${blendTreeData.children.length} children`);
+                this._blendTree = new BlendTree(blendTreeData, this._parameters, animationMap);
+                this._isEmpty = false;
+            } else if (animationGroup) {
+                // Create a single-motion blend tree
+                const singleMotionTree: IBlendTree = {
+                    hash: 0,
+                    name: name,
+                    blendType: BlendTreeType.Direct,
+                    children: [{
+                        hash: 0,
+                        type: MotionType.Clip,
+                        motion: name,
+                        positionX: 0,
+                        positionY: 0,
+                        threshold: 0,
+                        timescale: 1,
+                        weight: 1,
+                        directBlendParameter: "",
+                        subtree: undefined,
+                        looping: blendTreeData?.looping ?? true // Inherit looping state from parent
+                    }],
+                    blendParameterX: "",
+                    blendParameterY: "",
+                    minThreshold: 0,
+                    maxThreshold: 1
+                };
+                console.log(`[AnimationState] Creating single-motion blend tree for state "${name}"`);
+                this._blendTree = new BlendTree(singleMotionTree, this._parameters, animationMap);
+                this._isEmpty = false;
+            } else {
+                console.log(`[AnimationState] Creating empty state "${name}"`);
+                this._isEmpty = true;
+            }
         }
 
         public get isEmpty(): boolean {
@@ -618,7 +700,15 @@ namespace TOOLKIT {
                 const targetNode = (node || targetAnim.target) as BABYLON.TransformNode;
                 if (!node || targetAnim.target === node) {
                     const animation = targetAnim.animation;
-                    const time = this._currentTime % (animation.getKeys()[animation.getKeys().length - 1].frame);
+                    const lastFrame = animation.getKeys()[animation.getKeys().length - 1].frame;
+                    let time = this._currentTime;
+                    
+                    // Handle looping vs non-looping animations
+                    if (this._isLooping) {
+                        time = time % lastFrame;
+                    } else {
+                        time = Math.min(time, lastFrame);
+                    }
 
                     // Sample animation at current time
                     let value: any;
@@ -701,7 +791,15 @@ namespace TOOLKIT {
             );
 
             if (rootAnim) {
-                const time = this._currentTime % rootAnim.animation.getHighestFrame();
+                const lastFrame = rootAnim.animation.getHighestFrame();
+                let time = this._currentTime;
+                
+                // Handle looping vs non-looping for root motion
+                if (this._isLooping) {
+                    time = time % lastFrame;
+                } else {
+                    time = Math.min(time, lastFrame);
+                }
 
                 // Extract position
                 if (rootAnim.animation.targetProperty === "position") {
