@@ -42,16 +42,21 @@ import * as BABYLON from 'babylonjs';
 
 6... If Extrat Root Motion Option enabled, Extract the root motion from the root bone (or the character's transform) in an animation and applying it directly to the character's global transform. This allows the animation to control the character's movement instead of relying solely on physics or scripts.
 
-7... MUST support EMPTY states that dont have a `motion` defined in the the data object. The EMPTY state simply does nothing, does NOT update the animatable or anything while in the EMPTY state.
+7... The root bone should be optional for the root motion only. The rest of the animation should work fine if no root bone is specified
+
+8... MUST support EMPTY states that dont have a `motion` defined in the the data object. The EMPTY state simply does nothing, does NOT update the animatable or anything while in the EMPTY state.
 
 8... There should be a 'play' or setState function to explicitly set the current state by its state name.
 
-9... The script must support NON-Bone transforms as well. You make sure not to MANGLE the bones.
+9... To use the script all I should have to do is initialize with animation groups and the already parsed `machine.json` object and tick its update function in the render loop. The new Animation Controller should handle EVERYTHING. 
 
-10... To use the script all I should have to do is initialize with animation groups and the already parsed `machine.json` object and tick its update function in the render loop. The new Animation Controller should handle EVERYTHING. 
+10... Do not OVER create classes to deal with metadata.
 
-Please evaluate `machine.json` file from the repo to understand the structure of the machine property (and its child properties).
+11... Use my existing `AnimationState.ts` as a guide because it works (Except 2D blendtrees are a bit choppy and avatar masks are not working for each layer)
 
+12... PLEASE CREATE ALL CODE, NEVER LEAVE UN-IMPLEMENTED FUNCTIONS
+
+Please evaluate my existing `AnimationState.ts` and `machine.json` file from the repo to understand the structure of the machine property.
 
 MOST IMPORTANT... All the information you need is in the `machine.json` machine object which is currently working using my legacy TOOLKIT.AnimationState class. It just has performance issues, hence us making a new TOOLKIT.AnimationController from scratch to fix those issues.
 
