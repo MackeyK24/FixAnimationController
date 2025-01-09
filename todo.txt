@@ -1,0 +1,86 @@
+# Animation Controller Test Plan
+
+## 1. Transitions Tests
+### 1.1 Basic State Transitions
+- [ ] Test direct state-to-state transitions
+- [ ] Verify transition duration and blending
+- [ ] Test transition interruption handling
+- [ ] Verify exit time behavior
+- [ ] Test ANY state transitions
+
+### 1.2 Transition Conditions
+- [ ] Test parameter-based conditions (Float, Int, Bool, Trigger)
+- [ ] Test multiple conditions (AND logic)
+- [ ] Test condition modes (If, IfNot, Greater, Less, Equals, NotEqual)
+- [ ] Verify condition threshold values
+
+### 1.3 Transition Edge Cases
+- [ ] Test self-transitions
+- [ ] Test empty state transitions
+- [ ] Test invalid state transitions
+- [ ] Test concurrent transitions across layers
+
+## 2. Blend Tree Tests
+### 2.1 Simple1D Blend Trees
+- [ ] Test linear blending between two animations
+- [ ] Verify parameter-driven blending
+- [ ] Test threshold boundaries
+- [ ] Verify animation sampling at different blend weights
+
+### 2.2 2D Blend Trees
+- [ ] Test SimpleDirectional2D blending
+- [ ] Test FreeformDirectional2D blending
+- [ ] Test FreeformCartesian2D blending
+- [ ] Verify correct parameter space mapping
+- [ ] Test animation sampling and interpolation
+
+### 2.3 Blend Tree Features
+- [ ] Test cycleOffset behavior
+- [ ] Verify direct blend parameter handling
+- [ ] Test mirror functionality
+- [ ] Verify timescale effects
+- [ ] Test nested blend trees
+
+## 3. Avatar Mask Tests
+### 3.1 Basic Masking
+- [ ] Test single bone masking
+- [ ] Test bone hierarchy masking
+- [ ] Verify transform path filtering
+- [ ] Test mask inclusion/exclusion logic
+
+### 3.2 Layer Integration
+- [ ] Test masked animations on different layers
+- [ ] Verify layer blending with masks
+- [ ] Test mask override behavior
+- [ ] Verify partial skeleton animation
+
+### 3.3 Advanced Masking
+- [ ] Test multiple active masks
+- [ ] Test mask transitions
+- [ ] Verify mask weight blending
+- [ ] Test performance with complex masks
+
+## 4. Integration Tests
+### 4.1 Combined Features
+- [ ] Test transitions between blend trees
+- [ ] Test masked transitions
+- [ ] Verify layer synchronization
+- [ ] Test root motion with masks
+
+### 4.2 Performance Tests
+- [ ] Measure CPU usage during transitions
+- [ ] Profile blend tree sampling
+- [ ] Benchmark avatar mask filtering
+- [ ] Test memory usage patterns
+
+## Test Implementation Priority
+1. Basic state transitions
+2. Simple blend trees
+3. Basic avatar masking
+4. Advanced transitions
+5. Complex blend trees
+6. Advanced masking
+7. Integration scenarios
+8. Performance optimization
+
+Each test category will be implemented as isolated test cases that can be run independently, following the tight testing loops principle. Tests will minimize dependencies on external systems where possible.
