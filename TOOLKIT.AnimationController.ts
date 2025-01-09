@@ -261,8 +261,9 @@ namespace TOOLKIT {
             this._rootMotionMatrix.setAll(0);
 
             // Finalize each layer's animations
-            // Only pass rootTransform if root motion is enabled or if we have a valid transform
-            const shouldUseRootTransform = this._applyRootMotion || (this._rootTransform != null);
+            // Only pass rootTransform if root motion is enabled AND we have a valid transform
+            // This ensures root transform is truly optional and only used for root motion
+            const shouldUseRootTransform = this._applyRootMotion && this._rootTransform != null;
             this._layers.forEach(layer => {
                 layer.finalizeAnimations(shouldUseRootTransform ? this._rootTransform : undefined);
             });
@@ -273,18 +274,23 @@ namespace TOOLKIT {
                     console.log(`[AnimationController] Root motion is enabled but no root transform provided, skipping root motion application`);
                     return;
                 }
+
                 const rootMotion = this._layers[0]?.getRootMotion();
                 if (!rootMotion) {
                     console.log(`[AnimationController] No root motion data available from base layer`);
                     return;
                 }
-                if (!this._rootTransform.rotationQuaternion) {
-                    console.log(`[AnimationController] Root transform has no rotation quaternion, skipping root motion rotation`);
+
+                // Apply root motion to transform if available
+                if (this._rootTransform.position) {
                     this._rootTransform.position.addInPlace(rootMotion.position);
-                } else {
-                    console.log(`[AnimationController] Applying root motion position and rotation to transform`);
-                    this._rootTransform.position.addInPlace(rootMotion.position);
+                }
+
+                if (this._rootTransform.rotationQuaternion) {
                     this._rootTransform.rotationQuaternion.multiplyInPlace(rootMotion.rotation);
+                    console.log(`[AnimationController] Applied root motion position and rotation`);
+                } else {
+                    console.log(`[AnimationController] Root transform has no rotation quaternion, applied position only`);
                 }
             }
         }
@@ -337,51 +343,58 @@ namespace TOOLKIT {
         }
 
         public finalizeAnimations(rootNode?: BABYLON.TransformNode): void {
-            if (!rootNode) {
-                console.log(`[AnimationLayer] No root node provided for animation application. Layer: ${this._name}, Weight: ${this._defaultWeight}`);
-                return;
-            }
-
             const state = this._stateMachine.getCurrentState();
             if (!state || state.isEmpty) {
                 console.log(`[AnimationLayer] No valid state or empty state, skipping animation application`);
                 return;
             }
 
+            // Log if no root node is provided
+            if (!rootNode) {
+                console.log(`[AnimationLayer] No root node provided. Layer: ${this._name}, Weight: ${this._defaultWeight}. Some features may be limited.`);
+            }
+
             // Apply animations based on avatar mask
-            if (this._avatarMask) {
+            if (this._avatarMask && rootNode) {
+                // Avatar masks require a root node to traverse the hierarchy
                 this.applyMaskedAnimations(rootNode);
-            } else {
-                this.applyFullAnimations(rootNode);
+            } else if (!this._avatarMask) {
+                // For non-masked animations, we can still apply them without a root node
+                this.applyFullAnimations();
             }
         }
 
         private applyMaskedAnimations(rootNode?: BABYLON.TransformNode): void {
+            // If no root node is provided, we can't traverse the hierarchy for masked animations
             if (!rootNode) {
-                console.log(`[AnimationLayer] No root node provided for masked animations. Layer: ${this._name}, Mask Paths: ${this._avatarMask.transformPaths.length}`);
+                console.log(`[AnimationLayer] No root node provided for masked animations in layer "${this._name}". Skipping ${this._avatarMask.transformPaths.length} masked paths.`);
+                // Instead of returning, try to apply animations to their original targets
+                this.applyFullAnimations();
                 return;
             }
 
-            // Filter and apply animations only to masked bones
+            // Filter and apply animations only to masked bones/transforms
             const transformPaths = this._avatarMask.transformPaths;
+            let appliedCount = 0;
             transformPaths.forEach(path => {
                 const node = this.findNodeByPath(path, rootNode);
                 if (node) {
                     this._stateMachine.applyAnimationToNode(node, this._defaultWeight);
+                    appliedCount++;
                 } else {
-                    console.log(`[AnimationLayer] Could not find node at path: ${path}`);
+                    console.log(`[AnimationLayer] Could not find node at path "${path}" in layer "${this._name}"`);
                 }
             });
+
+            console.log(`[AnimationLayer] Applied masked animations to ${appliedCount}/${transformPaths.length} nodes in layer "${this._name}"`);
         }
 
-        private applyFullAnimations(rootNode?: BABYLON.TransformNode): void {
-            if (!rootNode) {
-                console.log(`[AnimationLayer] No root node provided for full animations, skipping`);
-                return;
+        private applyFullAnimations(): void {
+            // Apply animations directly through the state machine
+            // This will handle both skeletal and non-skeletal animations
+            if (this._stateMachine.getCurrentState()) {
+                this._stateMachine.applyAnimationToNode(undefined, this._defaultWeight);
             }
-
-            // Apply animations to all bones
-            this._stateMachine.applyAnimationToNode(rootNode, this._defaultWeight);
         }
 
         private findNodeByPath(path: string, root?: BABYLON.TransformNode): BABYLON.TransformNode | null {
@@ -463,7 +476,8 @@ namespace TOOLKIT {
             return this._currentState?.getRootMotion() || null;
         }
 
-        public applyAnimationToNode(node: BABYLON.TransformNode, weight: number): void {
+        public applyAnimationToNode(node?: BABYLON.TransformNode, weight: number = 1.0): void {
+            // Allow animations without root node
             this._currentState?.applyToNode(node, weight);
         }
 
@@ -584,21 +598,25 @@ namespace TOOLKIT {
             };
         }
 
-        public applyToNode(node: BABYLON.TransformNode, weight: number): void {
+        public applyToNode(node?: BABYLON.TransformNode, weight: number = 1.0): void {
             if (this._isEmpty) return;
 
             if (this._blendTree) {
                 this._blendTree.applyToNode(node, weight);
             } else if (this._animationGroup) {
+                // Allow animations without root node
                 this.sampleAndApplyAnimation(node, weight);
             }
         }
 
-        private sampleAndApplyAnimation(node: BABYLON.TransformNode, weight: number): void {
+        private sampleAndApplyAnimation(node?: BABYLON.TransformNode, weight: number = 1.0): void {
             if (!this._animationGroup) return;
 
             this._animationGroup.targetedAnimations.forEach(targetAnim => {
-                if (targetAnim.target === node) {
+                // If no node is provided, use the animation's target directly
+                // If node is provided, only apply if it matches the target
+                const targetNode = (node || targetAnim.target) as BABYLON.TransformNode;
+                if (!node || targetAnim.target === node) {
                     const animation = targetAnim.animation;
                     const time = this._currentTime % (animation.getKeys()[animation.getKeys().length - 1].frame);
 
@@ -607,20 +625,20 @@ namespace TOOLKIT {
                     switch (animation.targetProperty) {
                         case "position":
                             value = this.sampleVector3Animation(animation, time);
-                            if (node.position) {
-                                BABYLON.Vector3.LerpToRef(node.position, value, weight, node.position);
+                            if (targetNode && targetNode.position) {
+                                BABYLON.Vector3.LerpToRef(targetNode.position, value, weight, targetNode.position);
                             }
                             break;
                         case "rotationQuaternion":
                             value = this.sampleQuaternionAnimation(animation, time);
-                            if (node.rotationQuaternion) {
-                                BABYLON.Quaternion.SlerpToRef(node.rotationQuaternion, value, weight, node.rotationQuaternion);
+                            if (targetNode && targetNode.rotationQuaternion) {
+                                BABYLON.Quaternion.SlerpToRef(targetNode.rotationQuaternion, value, weight, targetNode.rotationQuaternion);
                             }
                             break;
                         case "scaling":
                             value = this.sampleVector3Animation(animation, time);
-                            if (node.scaling) {
-                                BABYLON.Vector3.LerpToRef(node.scaling, value, weight, node.scaling);
+                            if (targetNode && targetNode.scaling) {
+                                BABYLON.Vector3.LerpToRef(targetNode.scaling, value, weight, targetNode.scaling);
                             }
                             break;
                     }
@@ -739,7 +757,7 @@ namespace TOOLKIT {
             this._children.forEach(child => child.update(deltaTime));
         }
 
-        public applyToNode(node: BABYLON.TransformNode, layerWeight: number): void {
+        public applyToNode(node?: BABYLON.TransformNode, layerWeight: number = 1.0): void {
             this._children.forEach(child => {
                 child.applyToNode(node, child.weight * layerWeight);
             });
@@ -891,11 +909,13 @@ namespace TOOLKIT {
             this._currentTime += deltaTime;
         }
 
-        public applyToNode(node: BABYLON.TransformNode, weight: number): void {
+        public applyToNode(node?: BABYLON.TransformNode, weight: number = 1.0): void {
             if (!this._animationGroup || weight <= 0) return;
 
             this._animationGroup.targetedAnimations.forEach(targetAnim => {
-                if (targetAnim.target === node) {
+                // If no node is provided, use the animation's target directly
+                // If node is provided, only apply if it matches the target
+                if (!node || targetAnim.target === node) {
                     const animation = targetAnim.animation;
                     const time = this._currentTime % (animation.getKeys()[animation.getKeys().length - 1].frame);
 
@@ -916,11 +936,12 @@ namespace TOOLKIT {
         }
 
         private applyPositionAnimation(
-            node: BABYLON.TransformNode,
+            node: BABYLON.TransformNode | undefined,
             animation: BABYLON.Animation,
             time: number,
             weight: number
         ): void {
+            if (!node) return;
             const value = this.sampleVector3Animation(animation, time);
             if (node.position) {
                 BABYLON.Vector3.LerpToRef(node.position, value, weight, node.position);
@@ -928,11 +949,12 @@ namespace TOOLKIT {
         }
 
         private applyRotationAnimation(
-            node: BABYLON.TransformNode,
+            node: BABYLON.TransformNode | undefined,
             animation: BABYLON.Animation,
             time: number,
             weight: number
         ): void {
+            if (!node) return;
             const value = this.sampleQuaternionAnimation(animation, time);
             if (node.rotationQuaternion) {
                 BABYLON.Quaternion.SlerpToRef(
@@ -945,11 +967,12 @@ namespace TOOLKIT {
         }
 
         private applyScalingAnimation(
-            node: BABYLON.TransformNode,
+            node: BABYLON.TransformNode | undefined,
             animation: BABYLON.Animation,
             time: number,
             weight: number
         ): void {
+            if (!node) return;
             const value = this.sampleVector3Animation(animation, time);
             if (node.scaling) {
                 BABYLON.Vector3.LerpToRef(node.scaling, value, weight, node.scaling);
