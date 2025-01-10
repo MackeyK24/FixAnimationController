@@ -466,10 +466,11 @@ namespace TOOLKIT {
 
             // Sample and blend animations
             tree.children.forEach((child: any) => {
-                if (child.weight > 0) {
+                if (child.type === 0 || child.weight > 0) {
                     const clip = this.animationGroups.get(child.motion);
+                    const weight = child.type === 1 ? child.weight : 1;
                     if (clip) {
-                        this.sampleAndBlendAnimation(clip, child.weight, layer, deltaTime);
+                        this.sampleAndBlendAnimation(clip, weight, layer, deltaTime);
                     }
                 }
             });
