@@ -60,22 +60,6 @@ namespace TOOLKIT {
         threshold: number | boolean;
     }
 
-    export class AnimationMixer {
-        public position: BABYLON.Vector3;
-        public rotation: BABYLON.Quaternion;
-        public scaling: BABYLON.Vector3;
-        public blendWeight: number;
-        public targetTransform: BABYLON.TransformNode | null;
-
-        constructor() {
-            this.position = new BABYLON.Vector3();
-            this.rotation = new BABYLON.Quaternion();
-            this.scaling = new BABYLON.Vector3(1, 1, 1);
-            this.blendWeight = 0;
-            this.targetTransform = null;
-        }
-    }
-
     export class AnimationLayer {
         private currentState: IAnimationState | null;
         private states: Map<string, IAnimationState>;
@@ -85,7 +69,6 @@ namespace TOOLKIT {
         private index: number;
         private name: string;
         private defaultWeight: number;
-        private mixers: Map<string, AnimationMixer>;
         private _loopBlend: boolean;
         private _length: number;
         private _frametime: number;
@@ -95,7 +78,6 @@ namespace TOOLKIT {
             this.currentState = null;
             this.states = new Map();
             this.avatarMask = new Map();
-            this.mixers = new Map();
             this.time = 0;
             this.speed = 1;
             this.index = index;
@@ -150,14 +132,6 @@ namespace TOOLKIT {
                 this._loopBlend = state.loopBlend || false;
                 this._looptime = state.loop || false;
                 this._length = state.motion?.to || 0;
-
-                // Reset animation properties
-                this.mixers.forEach(mixer => {
-                    mixer.position.set(0, 0, 0);
-                    mixer.rotation.set(0, 0, 0, 1);
-                    mixer.scaling.set(1, 1, 1);
-                    mixer.blendWeight = 0;
-                });
             } else {
                 console.warn(`State ${stateName} does not belong to layer ${this.name} (index: ${this.index})`);
             }
@@ -167,9 +141,29 @@ namespace TOOLKIT {
             return this.currentState;
         }
 
+        public getAvatarMaskWeight(transform: BABYLON.TransformNode): number {
+            if (this.avatarMask.size === 0) return 1;
+
+            // Check direct match
+            if (this.avatarMask.has(transform.name)) {
+                return this.avatarMask.get(transform.name) || 0;
+            }
+
+            // Check parent hierarchy and use closest parent's weight
+            let current: BABYLON.Node | null = transform;
+            while (current) {
+                if (this.avatarMask.has(current.name)) {
+                    return this.avatarMask.get(current.name) || 0;
+                }
+                current = current.parent;
+            }
+
+            // If no mask entry found in hierarchy, allow full weight
+            return 1;
+        }
+
         public checkAvatarMask(transform: BABYLON.TransformNode): boolean {
-            if (this.avatarMask.size === 0) return true;
-            return this.avatarMask.has(transform.name);
+            return this.getAvatarMaskWeight(transform) > 0;
         }
 
         public getAnimationTime(): number {
@@ -263,27 +257,87 @@ namespace TOOLKIT {
         }
 
         public blendTransformValue(target: BABYLON.TransformNode | IMorphTarget, value: any, weight: number): void {
-            const id = (target as any).uniqueId?.toString() || 'default';
-            if (!this.mixers.has(id)) {
-                this.mixers.set(id, new AnimationMixer());
-            }
+            // Apply layer and avatar mask weights
+            const maskWeight = target instanceof BABYLON.TransformNode ? this.getAvatarMaskWeight(target) : 1;
+            weight *= this.defaultWeight * maskWeight;
 
-            const mixer = this.mixers.get(id)!;
-            mixer.targetTransform = target as BABYLON.TransformNode;
+            if (weight <= 0) return; // Skip if no influence
 
             if (target instanceof BABYLON.TransformNode) {
                 if (value instanceof BABYLON.Vector3) {
-                    value.scaleToRef(weight, BABYLON.TmpVectors.Vector3[0]);
-                    mixer.position.addInPlace(BABYLON.TmpVectors.Vector3[0]);
+                    // Handle position blending
+                    const blendTarget = this._loopBlend && this._looptime && Math.abs(this.time - this.getLength()) < 0.001
+                        ? BABYLON.Vector3.Lerp(value, this.sampleAnimationValue(target, 0) as BABYLON.Vector3 || value, 0.5)
+                        : value;
+                    
+                    // Direct transform update
+                    BABYLON.Vector3.LerpToRef(target.position, blendTarget, weight, target.position);
                 } else if (value instanceof BABYLON.Quaternion) {
-                    BABYLON.Quaternion.SlerpToRef(mixer.rotation, value, weight, mixer.rotation);
+                    if (!target.rotationQuaternion) {
+                        target.rotationQuaternion = new BABYLON.Quaternion();
+                    }
+
+                    // Handle rotation blending
+                    const blendTarget = this._loopBlend && this._looptime && Math.abs(this.time - this.getLength()) < 0.001
+                        ? BABYLON.Quaternion.Slerp(value, this.sampleAnimationValue(target, 0) as BABYLON.Quaternion || value, 0.5)
+                        : value;
+                    
+                    // Direct transform update
+                    BABYLON.Quaternion.SlerpToRef(target.rotationQuaternion, blendTarget, weight, target.rotationQuaternion);
                 }
             } else if ((target as any).influence !== undefined) {
+                // Direct morph target update
                 (target as IMorphTarget).influence = BABYLON.Scalar.Lerp(
                     (target as IMorphTarget).influence,
                     value,
                     weight
                 );
+            }
+        }
+
+        private sampleAnimationValue(target: BABYLON.TransformNode, time: number): BABYLON.Vector3 | BABYLON.Quaternion | null {
+            if (!this.currentState || !this.currentState.motion) return null;
+            
+            const animation = this.currentState.motion.targetedAnimations.find(
+                anim => anim.target === target
+            );
+            
+            if (!animation) return null;
+
+            const keys = animation.animation.getKeys();
+            if (!keys || keys.length === 0) return null;
+
+            const fps = animation.animation.framePerSecond;
+            const totalFrames = keys[keys.length - 1].frame;
+            const frame = (time * fps) % totalFrames;
+
+            // Find the two keys to interpolate between
+            let key1 = keys[0];
+            let key2 = keys[0];
+
+            for (let i = 0; i < keys.length; i++) {
+                if (keys[i].frame <= frame) {
+                    key1 = keys[i];
+                    key2 = keys[i + 1] || keys[0]; // Loop back to first key if needed
+                }
+            }
+
+            // Calculate interpolation factor
+            const range = key2.frame - key1.frame;
+            const factor = range <= 0 ? 0 : (frame - key1.frame) / range;
+
+            // Interpolate based on animation property type
+            switch (animation.animation.dataType) {
+                case BABYLON.Animation.ANIMATIONTYPE_VECTOR3:
+                    return BABYLON.Vector3.Lerp(key1.value, key2.value, factor);
+                case BABYLON.Animation.ANIMATIONTYPE_QUATERNION:
+                    return BABYLON.Quaternion.Slerp(key1.value, key2.value, factor);
+                case BABYLON.Animation.ANIMATIONTYPE_FLOAT:
+                    // Convert float to Vector3 for consistent handling
+                    const floatValue = BABYLON.Scalar.Lerp(key1.value, key2.value, factor);
+                    return new BABYLON.Vector3(floatValue, 0, 0);
+                default:
+                    return null;
             }
         }
 
@@ -426,13 +480,19 @@ namespace TOOLKIT {
         public update(deltaTime: number): void {
             if (!this.initialized) return;
 
-            // Update each layer
+            // Scale delta time by speed ratio
+            const scaledDeltaTime = deltaTime * this.speedRatio;
+
+            // Update each layer in order (lower layers first)
             this.layers.forEach(layer => {
                 // Process state machine for layer
-                layer.update(deltaTime, this.parameters);
+                layer.update(scaledDeltaTime, this.parameters);
 
-                // Sample and blend animations
-                this.processAnimations(layer, deltaTime);
+                // Sample and blend animations if not in EMPTY state
+                const state = layer.getCurrentState();
+                if (state && (state.motion || state.blendtree)) {
+                    this.processAnimations(layer, scaledDeltaTime);
+                }
             });
 
             // Update timing properties from active layer
@@ -445,8 +505,10 @@ namespace TOOLKIT {
             }
 
             // Process root motion if enabled
-            if (this.applyRootMotion && this.rootBone) {
-                this.processRootMotion(deltaTime);
+            if (this.applyRootMotion) {
+                // Mark motion matrix as dirty to ensure processing
+                this._dirtyMotionMatrix = true;
+                this.processRootMotion(scaledDeltaTime);
             }
         }
 
@@ -733,10 +795,19 @@ namespace TOOLKIT {
                     this.loopRotateSpeed = this.angularVelocity.y;
                 }
 
-                // Apply root motion to root bone
-                if (this.rootBone.rotationQuaternion) {
-                    this.rootBone.position.addInPlace(this.deltaPosition);
-                    this.rootBone.rotationQuaternion.multiplyInPlace(this.deltaRotation);
+                // Apply root motion to character transform (root bone's parent or root bone itself)
+                const targetNode = this.rootBone?.parent instanceof BABYLON.TransformNode ? 
+                    this.rootBone.parent : this.rootBone;
+                
+                if (targetNode) {
+                    // Apply position delta in world space
+                    targetNode.position.addInPlace(this.deltaPosition);
+                    
+                    // Apply rotation delta
+                    if (!targetNode.rotationQuaternion) {
+                        targetNode.rotationQuaternion = new BABYLON.Quaternion();
+                    }
+                    targetNode.rotationQuaternion.multiplyInPlace(this.deltaRotation);
                 }
             }
         }
