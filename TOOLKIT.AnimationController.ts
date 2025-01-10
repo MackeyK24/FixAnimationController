@@ -1,7 +1,7 @@
 import * as BABYLON from 'babylonjs';
 
 /** Babylon Toolkit Namespace */
-export namespace TOOLKIT {
+namespace TOOLKIT {
     export enum AnimatorParameterType {
         Float = 1,
         Int = 2,
@@ -684,6 +684,10 @@ export namespace TOOLKIT {
         }
 
         // Parameter getters/setters
+        public hasBool(name: string): boolean {
+            return (this.parameters.get(name) != null);
+        }
+
         public getBool(name: string): boolean {
             return this.parameters.get(name) || false;
         }
@@ -692,6 +696,10 @@ export namespace TOOLKIT {
             if (this.parameterTypes.get(name) === AnimatorParameterType.Bool) {
                 this.parameters.set(name, value);
             }
+        }
+
+        public hasFloat(name: string): boolean {
+            return (this.parameters.get(name) != null);
         }
 
         public getFloat(name: string): number {
@@ -708,10 +716,18 @@ export namespace TOOLKIT {
             return this.parameters.get(name) || 0;
         }
 
+        public hasInteger(name: string): boolean {
+            return (this.parameters.get(name) != null);
+        }
+
         public setInteger(name: string, value: number): void {
             if (this.parameterTypes.get(name) === AnimatorParameterType.Int) {
                 this.parameters.set(name, Math.floor(value));
             }
+        }
+
+        public hasTrigger(name: string): boolean {
+            return (this.parameters.get(name) != null);
         }
 
         public setTrigger(name: string): void {
