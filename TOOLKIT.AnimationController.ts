@@ -374,12 +374,17 @@ namespace TOOLKIT {
             // Initialize layer's animation mask map
             layer.animationMaskMap = new Map<string, number>();
             
-            // Layer's animation state machine will be set in setState()
-            // For now, create minimal empty state as required by type system
-            const emptyState = new MachineState();
-            emptyState.layerIndex = index;
-            emptyState.layer = layer.name;
-            layer.animationStateMachine = emptyState;
+            // Set initial state from machine configuration
+            if (layer.entry) {
+                const storedState = this.namedStates.get(layer.entry);
+                if (storedState) {
+                    this.setState(layer.entry, index);
+                } else {
+                    console.warn(`Entry state '${layer.entry}' not found for layer ${layer.name}`);
+                }
+            } else {
+                console.warn(`No entry state defined for layer ${layer.name}`);
+            }
 
             // Initialize avatar mask if present
             if (layer.avatarMask) {
@@ -865,22 +870,47 @@ namespace TOOLKIT {
             if (!target || !start || !end) return;
 
             if (start instanceof BABYLON.Vector3 && end instanceof BABYLON.Vector3) {
-                const interpolated = BABYLON.Vector3.Lerp(start, end, fraction);
+                // Initialize position if needed
                 if (!target.position) {
                     target.position = new BABYLON.Vector3();
                 }
-                const currentPosition = target.position.clone();
-                target.position = BABYLON.Vector3.Lerp(currentPosition, interpolated, weight);
+                
+                // Interpolate between keyframes first
+                const interpolated = new BABYLON.Vector3();
+                BABYLON.Vector3.LerpToRef(start, end, fraction, interpolated);
+                
+                // Apply weight blending in place
+                if (weight === 1.0) {
+                    target.position.copyFrom(interpolated);
+                } else {
+                    target.position.scaleInPlace(1.0 - weight);
+                    interpolated.scaleInPlace(weight);
+                    target.position.addInPlace(interpolated);
+                }
             } else if (start instanceof BABYLON.Quaternion && end instanceof BABYLON.Quaternion) {
-                const interpolated = BABYLON.Quaternion.Slerp(start, end, fraction);
+                // Initialize rotation if needed
                 if (!target.rotationQuaternion) {
                     target.rotationQuaternion = BABYLON.Quaternion.Identity();
                 }
-                target.rotationQuaternion = BABYLON.Quaternion.Slerp(
-                    target.rotationQuaternion,
-                    interpolated,
-                    weight
-                );
+                
+                // Interpolate between keyframes first
+                const interpolated = new BABYLON.Quaternion();
+                BABYLON.Quaternion.SlerpToRef(start, end, fraction, interpolated);
+                
+                // Apply weight blending in place and normalize
+                if (weight === 1.0) {
+                    target.rotationQuaternion.copyFrom(interpolated);
+                } else {
+                    BABYLON.Quaternion.SlerpToRef(
+                        target.rotationQuaternion,
+                        interpolated,
+                        weight,
+                        target.rotationQuaternion
+                    );
+                }
+                
+                // Ensure quaternion is normalized
+                target.rotationQuaternion.normalize();
             }
         }
 
