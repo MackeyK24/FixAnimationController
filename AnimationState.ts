@@ -1117,7 +1117,10 @@ namespace TOOLKIT {
 
                                 // TODO - Get blendable animation from target map - ???
                                 const blendableAnim: BABYLON.TargetedAnimation = child.track.targetedAnimations[targetIndex];
-                                const blendableWeight: number = (this._initialtargetblending === true) ? 1.0 : parseFloat(child.weight.toFixed(2));
+                                // Normalize blend tree weights
+                                const totalTreeWeight = tree.children.reduce((sum, c) => sum + (c.weight || 0), 0);
+                                const normalizedTreeWeight = totalTreeWeight > 0 ? child.weight / totalTreeWeight : child.weight;
+                                const blendableWeight: number = (this._initialtargetblending === true) ? 1.0 : parseFloat(normalizedTreeWeight.toFixed(2));
                                 this._initialtargetblending = false; // Note: Clear First Target Blending Buffer
                                 if (blendableAnim.target === masterAnimation.target && blendableAnim.animation.targetProperty === masterAnimation.animation.targetProperty) {
                                     let adjustedFrameTime: number = normalizedFrameTime;                     // Note: Adjust Normalized Frame Time
@@ -1169,13 +1172,27 @@ namespace TOOLKIT {
                                             // Bake Root Bone Holder
                                             if (this._rootBoneWeight === true) {
                                                 if (targetMixer.rootPosition == null) targetMixer.rootPosition = new BABYLON.Vector3(0, 0, 0);
-                                                // DEPRECATED: if (blendTarget.parent != null) TOOLKIT.Utilities.TransformDirectionToRef((blendTarget.parent as BABYLON.TransformNode), this._rootBoneHolder, this._rootBoneHolder);
-                                                TOOLKIT.Utilities.BlendVector3Value(targetMixer.rootPosition, this._rootBoneHolder, blendableWeight);
+                                                // Convert root bone position to parent space if needed
+                                                if (blendTarget.parent) {
+                                                    const parentWorldMatrix = blendTarget.parent.getWorldMatrix();
+                                                    const parentInverseMatrix = parentWorldMatrix.clone().invert();
+                                                    const localPos = BABYLON.Vector3.TransformCoordinates(this._rootBoneHolder, parentInverseMatrix);
+                                                    TOOLKIT.Utilities.BlendVector3Value(targetMixer.rootPosition, localPos, blendableWeight);
+                                                } else {
+                                                    TOOLKIT.Utilities.BlendVector3Value(targetMixer.rootPosition, this._rootBoneHolder, blendableWeight);
+                                                }
                                             }
                                         } else {
-                                            // Bake Normal Pose Position
+                                            // Convert pose position to parent space if needed
                                             if (targetMixer.positionBuffer == null) targetMixer.positionBuffer = new BABYLON.Vector3(0, 0, 0);
-                                            TOOLKIT.Utilities.BlendVector3Value(targetMixer.positionBuffer, this._targetPosition, blendableWeight);
+                                            if (blendTarget.parent) {
+                                                const parentWorldMatrix = blendTarget.parent.getWorldMatrix();
+                                                const parentInverseMatrix = parentWorldMatrix.clone().invert();
+                                                const localPos = BABYLON.Vector3.TransformCoordinates(this._targetPosition, parentInverseMatrix);
+                                                TOOLKIT.Utilities.BlendVector3Value(targetMixer.positionBuffer, localPos, blendableWeight);
+                                            } else {
+                                                TOOLKIT.Utilities.BlendVector3Value(targetMixer.positionBuffer, this._targetPosition, blendableWeight);
+                                            }
                                         }
                                     } else if (masterAnimation.animation.targetProperty === "rotationQuaternion") {
                                         this._targetRotation = TOOLKIT.Utilities.SampleAnimationQuaternion(blendableAnim.animation, animationFrameTime, BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE, true);
@@ -1218,9 +1235,16 @@ namespace TOOLKIT {
                                                 TOOLKIT.Utilities.BlendQuaternionValue(targetMixer.rootRotation, this._rootQuatHolder, blendableWeight);
                                             }
                                         } else {
-                                            // Bake Normal Pose Rotation
+                                            // Convert pose rotation to parent space if needed
                                             if (targetMixer.rotationBuffer == null) targetMixer.rotationBuffer = new BABYLON.Quaternion(0, 0, 0, 0);
-                                            TOOLKIT.Utilities.BlendQuaternionValue(targetMixer.rotationBuffer, this._targetRotation, blendableWeight);
+                                            if (blendTarget.parent) {
+                                                const parentRot = blendTarget.parent.rotationQuaternion || BABYLON.Quaternion.Identity();
+                                                const localRot = BABYLON.Quaternion.Inverse(parentRot).multiply(this._targetRotation);
+                                                localRot.normalize();
+                                                TOOLKIT.Utilities.BlendQuaternionValue(targetMixer.rotationBuffer, localRot, blendableWeight);
+                                            } else {
+                                                TOOLKIT.Utilities.BlendQuaternionValue(targetMixer.rotationBuffer, this._targetRotation, blendableWeight);
+                                            }
                                         }
                                     } else if (masterAnimation.animation.targetProperty === "scaling") {
                                         this._targetScaling = TOOLKIT.Utilities.SampleAnimationVector3(blendableAnim.animation, animationFrameTime, BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE, true);
@@ -1288,7 +1312,21 @@ namespace TOOLKIT {
                                                     animationTargetMixer.blendingFactor += animationTargetMixer.blendingSpeed;
                                                 }
                                             }
-                                            TOOLKIT.Utilities.FastMatrixSlerp(this._blenderMatrix, this._updateMatrix, layer.defaultWeight, this._blenderMatrix);
+                                            // Normalize layer weight to ensure proper blending
+                                            const totalLayerWeight = this._machine.layers.reduce((sum, l) => sum + l.defaultWeight, 0);
+                                            const normalizedWeight = totalLayerWeight > 0 ? layer.defaultWeight / totalLayerWeight : layer.defaultWeight;
+                                            
+                                            // Apply normalized weight blending
+                                            TOOLKIT.Utilities.FastMatrixSlerp(this._blenderMatrix, this._updateMatrix, normalizedWeight, this._blenderMatrix);
+                                            
+                                            // Decompose and normalize rotation after matrix blending
+                                            const tempScale = new BABYLON.Vector3();
+                                            const tempRot = new BABYLON.Quaternion();
+                                            const tempPos = new BABYLON.Vector3();
+                                            this._blenderMatrix.decompose(tempScale, tempRot, tempPos);
+                                            tempRot.normalize();
+                                            BABYLON.Matrix.ComposeToRef(tempScale, tempRot, tempPos, this._blenderMatrix);
+                                            
                                             this._dirtyBlenderMatrix = true;
                                             animationTargetMixer.positionBuffer = null;
                                             animationTargetMixer.rotationBuffer = null;
@@ -1323,7 +1361,19 @@ namespace TOOLKIT {
                                                 }
                                             }
                                             */
-                                            TOOLKIT.Utilities.FastMatrixSlerp(this._rootMotionMatrix, this._updateMatrix, layer.defaultWeight, this._rootMotionMatrix);
+                                            // Use same normalized weight for root motion
+                                            const totalLayerWeight = this._machine.layers.reduce((sum, l) => sum + l.defaultWeight, 0);
+                                            const normalizedWeight = totalLayerWeight > 0 ? layer.defaultWeight / totalLayerWeight : layer.defaultWeight;
+                                            TOOLKIT.Utilities.FastMatrixSlerp(this._rootMotionMatrix, this._updateMatrix, normalizedWeight, this._rootMotionMatrix);
+                                            
+                                            // Decompose and normalize rotation after root motion matrix blending
+                                            const tempScale = new BABYLON.Vector3();
+                                            const tempRot = new BABYLON.Quaternion();
+                                            const tempPos = new BABYLON.Vector3();
+                                            this._rootMotionMatrix.decompose(tempScale, tempRot, tempPos);
+                                            tempRot.normalize();
+                                            BABYLON.Matrix.ComposeToRef(tempScale, tempRot, tempPos, this._rootMotionMatrix);
+                                            
                                             this._dirtyMotionMatrix = true;
                                             animationTargetMixer.rootPosition = null;
                                             animationTargetMixer.rootRotation = null;
@@ -1338,6 +1388,7 @@ namespace TOOLKIT {
                             });
                             if (this._dirtyBlenderMatrix != null) {
                                 this._blenderMatrix.decompose(animationTarget.scaling, animationTarget.rotationQuaternion, animationTarget.position);
+                                animationTarget.rotationQuaternion.normalize(); // Normalize final rotation
                             }
                         }
                     }
@@ -1347,6 +1398,7 @@ namespace TOOLKIT {
             if (this.applyRootMotion === true) {
                 if (this._dirtyMotionMatrix != null) {
                     this._rootMotionMatrix.decompose(this._rootMotionScaling, this._rootMotionRotation, this._rootMotionPosition);
+                    this._rootMotionRotation.normalize(); // Normalize root motion rotation
                     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                     // Calculate Built-In Root Motion Deltas
                     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

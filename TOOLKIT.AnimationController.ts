@@ -869,6 +869,10 @@ namespace TOOLKIT {
         private interpolateTransform(target: BABYLON.TransformNode, start: any, end: any, fraction: number, weight: number): void {
             if (!target || !start || !end) return;
 
+            const isRootBone = target === this.rootBone;
+            const parentMatrix = target.parent ? target.parent.getWorldMatrix() : BABYLON.Matrix.Identity();
+            const parentInverseMatrix = target.parent ? parentMatrix.clone().invert() : BABYLON.Matrix.Identity();
+
             if (start instanceof BABYLON.Vector3 && end instanceof BABYLON.Vector3) {
                 // Initialize position if needed
                 if (!target.position) {
@@ -879,13 +883,27 @@ namespace TOOLKIT {
                 const interpolated = new BABYLON.Vector3();
                 BABYLON.Vector3.LerpToRef(start, end, fraction, interpolated);
                 
-                // Apply weight blending in place
-                if (weight === 1.0) {
-                    target.position.copyFrom(interpolated);
+                if (!isRootBone && target.parent) {
+                    // Convert world space position to local space for child bones
+                    const worldPos = BABYLON.Vector3.TransformCoordinates(interpolated, parentInverseMatrix);
+                    
+                    // Apply weight blending in local space
+                    if (weight === 1.0) {
+                        target.position.copyFrom(worldPos);
+                    } else {
+                        target.position.scaleInPlace(1.0 - weight);
+                        worldPos.scaleInPlace(weight);
+                        target.position.addInPlace(worldPos);
+                    }
                 } else {
-                    target.position.scaleInPlace(1.0 - weight);
-                    interpolated.scaleInPlace(weight);
-                    target.position.addInPlace(interpolated);
+                    // Root bone uses world space directly
+                    if (weight === 1.0) {
+                        target.position.copyFrom(interpolated);
+                    } else {
+                        target.position.scaleInPlace(1.0 - weight);
+                        interpolated.scaleInPlace(weight);
+                        target.position.addInPlace(interpolated);
+                    }
                 }
             } else if (start instanceof BABYLON.Quaternion && end instanceof BABYLON.Quaternion) {
                 // Initialize rotation if needed
@@ -896,36 +914,89 @@ namespace TOOLKIT {
                 // Interpolate between keyframes first
                 const interpolated = new BABYLON.Quaternion();
                 BABYLON.Quaternion.SlerpToRef(start, end, fraction, interpolated);
+                interpolated.normalize(); // Normalize after interpolation
                 
-                // Apply weight blending in place and normalize
-                if (weight === 1.0) {
-                    target.rotationQuaternion.copyFrom(interpolated);
+                if (!isRootBone && target.parent) {
+                    // Convert world space rotation to local space for child bones
+                    const parentRot = target.parent.rotationQuaternion || BABYLON.Quaternion.Identity();
+                    const localRot = BABYLON.Quaternion.Inverse(parentRot).multiply(interpolated);
+                    localRot.normalize(); // Normalize after conversion
+                    
+                    // Apply weight blending in local space
+                    if (weight === 1.0) {
+                        target.rotationQuaternion.copyFrom(localRot);
+                    } else {
+                        BABYLON.Quaternion.SlerpToRef(
+                            target.rotationQuaternion,
+                            localRot,
+                            weight,
+                            target.rotationQuaternion
+                        );
+                    }
                 } else {
-                    BABYLON.Quaternion.SlerpToRef(
-                        target.rotationQuaternion,
-                        interpolated,
-                        weight,
-                        target.rotationQuaternion
-                    );
+                    // Root bone uses world space directly
+                    if (weight === 1.0) {
+                        target.rotationQuaternion.copyFrom(interpolated);
+                    } else {
+                        BABYLON.Quaternion.SlerpToRef(
+                            target.rotationQuaternion,
+                            interpolated,
+                            weight,
+                            target.rotationQuaternion
+                        );
+                    }
                 }
                 
-                // Ensure quaternion is normalized
+                // Always normalize after blending
                 target.rotationQuaternion.normalize();
             }
         }
 
         private extractRootMotion(start: any, end: any, _fraction: number, weight: number): void {
+            // Only extract root motion if we have a valid root bone
+            if (!this.rootBone) return;
+
+            // Get parent matrices for space conversion
+            const parentMatrix = this.rootBone.parent ? this.rootBone.parent.getWorldMatrix() : BABYLON.Matrix.Identity();
+            const parentInverseMatrix = this.rootBone.parent ? parentMatrix.clone().invert() : BABYLON.Matrix.Identity();
+            const parentRot = this.rootBone.parent ? this.rootBone.parent.rotationQuaternion || BABYLON.Quaternion.Identity() : BABYLON.Quaternion.Identity();
+
             if (start instanceof BABYLON.Vector3 && end instanceof BABYLON.Vector3) {
                 const delta = end.subtract(start);
-                this.rootMotionDelta.addInPlace(delta.scale(weight));
+                
+                // Convert delta to parent space if root bone has a parent
+                if (this.rootBone.parent) {
+                    const localDelta = BABYLON.Vector3.TransformCoordinates(delta, parentInverseMatrix);
+                    this.rootMotionDelta.addInPlace(localDelta.scale(weight));
+                } else {
+                    this.rootMotionDelta.addInPlace(delta.scale(weight));
+                }
+                this.rootMotionDelta.normalize(); // Normalize to prevent accumulation errors
             } else if (start instanceof BABYLON.Quaternion && end instanceof BABYLON.Quaternion) {
                 const delta = end.multiply(BABYLON.Quaternion.Inverse(start));
-                const newRotation = BABYLON.Quaternion.Slerp(
-                    BABYLON.Quaternion.Identity(),
-                    delta,
-                    weight
-                );
-                this._rootMotionRotation.copyFrom(newRotation.multiply(this._rootMotionRotation));
+                delta.normalize(); // Normalize the delta rotation
+
+                // Convert delta to parent space if root bone has a parent
+                if (this.rootBone.parent) {
+                    const localDelta = BABYLON.Quaternion.Inverse(parentRot).multiply(delta).multiply(parentRot);
+                    localDelta.normalize();
+                    const newRotation = BABYLON.Quaternion.Slerp(
+                        BABYLON.Quaternion.Identity(),
+                        localDelta,
+                        weight
+                    );
+                    newRotation.normalize();
+                    this._rootMotionRotation.multiplyInPlace(newRotation);
+                } else {
+                    const newRotation = BABYLON.Quaternion.Slerp(
+                        BABYLON.Quaternion.Identity(),
+                        delta,
+                        weight
+                    );
+                    newRotation.normalize();
+                    this._rootMotionRotation.multiplyInPlace(newRotation);
+                }
+                this._rootMotionRotation.normalize(); // Always normalize final rotation
             }
         }
 
@@ -985,9 +1056,20 @@ namespace TOOLKIT {
         private applyRootMotion(): void {
             if (!this.rootBone) return;
 
+            // Get parent world matrix if root bone has a parent
+            const parentMatrix = this.rootBone.parent ? this.rootBone.parent.getWorldMatrix() : BABYLON.Matrix.Identity();
+            const parentInverseMatrix = this.rootBone.parent ? parentMatrix.clone().invert() : BABYLON.Matrix.Identity();
+
             // Apply accumulated motion to root bone
             if (this._rootMotionDelta.lengthSquared() > 0) {
-                this.rootBone.position.addInPlace(this._rootMotionDelta);
+                // Convert root motion delta to local space if root bone has a parent
+                if (this.rootBone.parent) {
+                    const localDelta = BABYLON.Vector3.TransformCoordinates(this._rootMotionDelta, parentInverseMatrix);
+                    this.rootBone.position.addInPlace(localDelta);
+                } else {
+                    this.rootBone.position.addInPlace(this._rootMotionDelta);
+                }
+                
                 this._rootMotionSpeed = this._rootMotionDelta.length() / this.deltaTime;
                 this._rootMotionDelta.scaleInPlace(0);
             }
@@ -996,7 +1078,16 @@ namespace TOOLKIT {
                 if (!this.rootBone.rotationQuaternion) {
                     this.rootBone.rotationQuaternion = new BABYLON.Quaternion();
                 }
-                this.rootBone.rotationQuaternion.multiplyInPlace(this._rootMotionRotation);
+
+                // Convert root motion rotation to local space if root bone has a parent
+                if (this.rootBone.parent) {
+                    const parentRot = this.rootBone.parent.rotationQuaternion || BABYLON.Quaternion.Identity();
+                    const localRot = BABYLON.Quaternion.Inverse(parentRot).multiply(this._rootMotionRotation);
+                    localRot.normalize();
+                    this.rootBone.rotationQuaternion.multiplyInPlace(localRot);
+                } else {
+                    this.rootBone.rotationQuaternion.multiplyInPlace(this._rootMotionRotation);
+                }
                 
                 // Calculate angular velocity
                 const rotationDelta = this._rootMotionRotation.toEulerAngles();
@@ -1009,11 +1100,20 @@ namespace TOOLKIT {
                 this._rootMotionRotation.set(0, 0, 0, 1);
             }
 
-            // Store current transform for next frame
-            this._lastMotionPosition.copyFrom(this.rootBone.position);
+            // Ensure rotations are normalized
             if (this.rootBone.rotationQuaternion) {
-                this._lastMotionRotation.copyFrom(this.rootBone.rotationQuaternion);
+                this.rootBone.rotationQuaternion.normalize();
             }
+
+            // Store current transform for next frame (in world space)
+            const worldMatrix = this.rootBone.getWorldMatrix();
+            const worldPos = new BABYLON.Vector3();
+            const worldRot = new BABYLON.Quaternion();
+            const worldScale = new BABYLON.Vector3();
+            worldMatrix.decompose(worldScale, worldRot, worldPos);
+            
+            this._lastMotionPosition.copyFrom(worldPos);
+            this._lastMotionRotation.copyFrom(worldRot);
         }
     }
 }
