@@ -212,11 +212,17 @@ namespace TOOLKIT {
         private readonly _transitions: Map<string, ITransition[]>;
         private readonly activeTransitions: Map<number, { from: MachineState; to: MachineState; transition: ITransition; progress: number }>;
         
+        // Store states by name, similar to AnimationState.ts's _data Map
+        private readonly namedStates: Map<string, MachineState>;
+        
         // Animation sampling data
         private currentTime: number = 0;
         private deltaTime: number = 0;
         private lastFrameTime: number = 0;
         private readonly frameTime: number = 1.0 / 60.0;
+        
+        // Animation speed control
+        public speedRatio: number = 1.0;
         
         // Root motion
         private readonly _rootMotionDelta: BABYLON.Vector3;
@@ -270,6 +276,7 @@ namespace TOOLKIT {
             this._transitions = new Map<string, ITransition[]>();
             this.activeTransitions = new Map();
             this.layers = new Array<IAnimationLayer>();
+            this.namedStates = new Map<string, MachineState>();
             
             // Initialize root motion properties
             this._rootMotionDelta = new BABYLON.Vector3();
@@ -340,6 +347,19 @@ namespace TOOLKIT {
             });
         }
 
+        // Initialize states from machineJson.states
+        if (Array.isArray(machineJson.states)) {
+            machineJson.states.forEach((stateData: Partial<MachineState>) => {
+                const state = new MachineState();
+                Object.assign(state, stateData);
+                
+                // Store state by name for later retrieval
+                if (state.name) {
+                    this.namedStates.set(state.name, state);
+                }
+            });
+        }
+
         // Initialize layers
         if (!Array.isArray(machineJson.layers)) {
             throw new Error("Machine data must contain layers array");
@@ -354,27 +374,30 @@ namespace TOOLKIT {
             // Initialize layer's animation mask map
             layer.animationMaskMap = new Map<string, number>();
 
-            // Create initial state for each layer
-            if (layer.animationStateMachine) {
-                const state = new MachineState();
-                Object.assign(state, layer.animationStateMachine);
-                state.layerIndex = index;
-                state.layer = layer.name;
+            // Create initial state for each layer using named states
+            if (layer.animationStateMachine && layer.animationStateMachine.name) {
+                const storedState = this.namedStates.get(layer.animationStateMachine.name);
+                if (storedState) {
+                    const state = new MachineState();
+                    Object.assign(state, storedState);
+                    state.layerIndex = index;
+                    state.layer = layer.name;
 
-                // Handle empty states
-                if (!state.name || !this.animations.has(state.name)) {
-                    state.type = MotionType.Clip;
-                    state.length = 0;
-                    state.time = 0;
-                    state.speed = 0;
-                } else {
-                    const anim = this.animations.get(state.name);
-                    if (anim) {
-                        state.length = anim.to;
+                    // Handle empty states
+                    if (!state.name || !this.animations.has(state.name)) {
+                        state.type = MotionType.Clip;
+                        state.length = 0;
+                        state.time = 0;
+                        state.speed = 0;
+                    } else {
+                        const anim = this.animations.get(state.name);
+                        if (anim) {
+                            state.length = anim.to;
+                        }
                     }
-                }
 
-                this.currentStates.set(index, state);
+                    this.currentStates.set(index, state);
+                }
             }
 
             // Initialize avatar mask if present
@@ -417,50 +440,49 @@ namespace TOOLKIT {
             throw new Error(`Invalid layer index: ${layerIndex}`);
         }
 
-        // Create new state
+        // Get stored state from namedStates
+        const storedState = this.namedStates.get(stateName);
+        if (!storedState) {
+            throw new Error(`State '${stateName}' not found in machine configuration`);
+        }
+
+        // Create a deep copy for runtime state
         const state = new MachineState();
-        state.name = stateName;
+        Object.assign(state, storedState);
+        
+        // Deep copy transitions
+        if (storedState.transitions) {
+            state.transitions = storedState.transitions.map(t => ({...t}));
+        }
+        
+        // Set layer-specific properties
         state.layerIndex = layerIndex;
         state.layer = layer.name;
-        
-        // Handle empty states
-        if (!stateName || !this.animations.has(stateName)) {
+        state.time = 0;
+        state.played = 0;
+        state.interrupted = false;
+
+        // Handle animation properties
+        if (!state.name || !this.animations.has(state.name)) {
             state.type = MotionType.Clip;
             state.length = 0;
             state.time = 0;
             state.speed = 0;
         } else {
-            const anim = this.animations.get(stateName);
+            const anim = this.animations.get(state.name);
             if (anim) {
-                state.type = MotionType.Clip;
                 state.length = anim.to;
-                state.time = 0;
-                state.speed = 1;
-
-                // Register transitions from machine state if available
-                if (layer.animationStateMachine && layer.animationStateMachine.transitions) {
-                    const transitions = layer.animationStateMachine.transitions.filter(t => 
-                        t.layerIndex === layerIndex && 
-                        (t.anyState || t.destination === stateName)
-                    );
-                    
-                    // Store state-specific transitions
-                    this._transitions.set(stateName, transitions.filter(t => !t.anyState));
-                    
-                    // Store ANY state transitions
-                    const anyTransitions = transitions.filter(t => t.anyState);
-                    if (anyTransitions.length > 0) {
-                        this._transitions.set('ANY', anyTransitions);
-                    }
-                }
             }
         }
 
         // Cancel any active transition
         this.activeTransitions.delete(layerIndex);
         
-        // Set the new state
+        // Set the state buffer in the layer and update current states
+        layer.animationStateMachine = state;
         this.currentStates.set(layerIndex, state);
+        
+        // Notify observers of state change
         this.onAnimationStateChangeObservable.notifyObservers({ layerIndex, state });
     }
 
@@ -586,18 +608,24 @@ namespace TOOLKIT {
         }
 
         private findValidTransition(state: MachineState): ITransition | null {
-            // Check state-specific transitions
+            // Get all transitions
             const stateTransitions = this._transitions.get(state.name) || [];
-            for (const transition of stateTransitions) {
-                if (this.checkTransitionConditions(transition)) {
-                    return transition;
-                }
-            }
-            
-            // Check ANY state transitions
             const anyTransitions = this._transitions.get('ANY') || [];
-            for (const transition of anyTransitions) {
-                if (this.checkTransitionConditions(transition)) {
+            const allTransitions = [...stateTransitions, ...anyTransitions];
+
+            // Check for solo transitions first
+            const soloTransition = allTransitions.find(t => t.solo === true && t.mute === false);
+            if (soloTransition) {
+                if (this.checkTransitionConditions(soloTransition) && this.checkExitTime(soloTransition)) {
+                    return soloTransition;
+                }
+                return null;
+            }
+
+            // Check regular transitions
+            for (const transition of allTransitions) {
+                if (transition.mute === true) continue;
+                if (this.checkTransitionConditions(transition) && this.checkExitTime(transition)) {
                     return transition;
                 }
             }
@@ -606,38 +634,60 @@ namespace TOOLKIT {
 
         private checkTransitionConditions(transition: ITransition): boolean {
             if (!transition.conditions || transition.conditions.length === 0) {
-                return transition.hasExitTime ? this.checkExitTime(transition) : true;
+                return true;
             }
 
-            return transition.conditions.every(condition => {
-                const paramValue = this._parameterValues.get(condition.parameter);
-                if (paramValue === undefined) return false;
+            let passed = 0;
+            const checks = transition.conditions.length;
 
-                switch (condition.mode) {
-                    case ConditionMode.Equals:
-                        return paramValue === condition.threshold;
-                    case ConditionMode.Greater:
-                        return typeof paramValue === 'number' && paramValue > condition.threshold;
-                    case ConditionMode.Less:
-                        return typeof paramValue === 'number' && paramValue < condition.threshold;
-                    case ConditionMode.NotEqual:
-                        return paramValue !== condition.threshold;
-                    case ConditionMode.If:
-                        return !!paramValue;
-                    case ConditionMode.IfNot:
-                        return !paramValue;
-                    default:
-                        return false;
+            for (const condition of transition.conditions) {
+                const paramType = this.parameters.get(condition.parameter);
+                if (!paramType) continue;
+
+                if (paramType === AnimatorParameterType.Float || paramType === AnimatorParameterType.Int) {
+                    const numValue = parseFloat(this.getParameter(condition.parameter)?.toString() || '0');
+                    if (condition.mode === ConditionMode.Greater && numValue > condition.threshold) {
+                        passed++;
+                    } else if (condition.mode === ConditionMode.Less && numValue < condition.threshold) {
+                        passed++;
+                    } else if (condition.mode === ConditionMode.Equals && numValue === condition.threshold) {
+                        passed++;
+                    } else if (condition.mode === ConditionMode.NotEqual && numValue !== condition.threshold) {
+                        passed++;
+                    }
+                } else if (paramType === AnimatorParameterType.Bool) {
+                    const boolValue = !!this.getParameter(condition.parameter);
+                    if (condition.mode === ConditionMode.If && boolValue === true) {
+                        passed++;
+                    } else if (condition.mode === ConditionMode.IfNot && boolValue === false) {
+                        passed++;
+                    }
+                } else if (paramType === AnimatorParameterType.Trigger) {
+                    const triggerValue = !!this.getParameter(condition.parameter);
+                    if (triggerValue === true) {
+                        passed++;
+                    }
                 }
-            });
+            }
+
+            return passed === checks;
         }
 
         private checkExitTime(transition: ITransition): boolean {
             const state = this.currentStates.get(transition.layerIndex);
             if (!state) return false;
 
-            const normalizedTime = state.time / state.length;
-            return normalizedTime >= transition.exitTime;
+            if (!transition.hasExitTime) return true;
+
+            const exitTimeSecs = (state.length * transition.exitTime) / this.speedRatio;
+            const exitTimeExpired = state.time >= exitTimeSecs;
+
+            // Handle interruption sources
+            if (!exitTimeExpired && transition.intSource === InterruptionSource.None) {
+                return false;
+            }
+
+            return exitTimeExpired;
         }
 
         private updateTransitionBlending(transition: { from: MachineState; to: MachineState; transition: ITransition; progress: number }, layer: IAnimationLayer): void {
