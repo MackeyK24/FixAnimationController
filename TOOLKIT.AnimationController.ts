@@ -219,7 +219,7 @@ export namespace TOOLKIT {
         private currentTime: number = 0;
         private deltaTime: number = 0;
         private lastFrameTime: number = 0;
-        private readonly frameTime: number = 1.0 / 60.0;
+
         
         // Animation speed control
         public speedRatio: number = 1.0;
@@ -429,48 +429,23 @@ export namespace TOOLKIT {
             throw new Error(`State '${stateName}' not found in machine configuration`);
         }
 
-        // Create runtime state buffer by deep copying the stored state
-        const state = new MachineState();
-        Object.assign(state, storedState);
-        
-        // Deep copy transitions and blend tree
-        if (storedState.transitions) {
-            state.transitions = storedState.transitions.map(t => ({...t}));
-        }
-        if (storedState.blendtree) {
-            state.blendtree = JSON.parse(JSON.stringify(storedState.blendtree));
-        }
-        
-        // Set layer-specific properties for runtime state
-        state.layerIndex = layerIndex;
-        state.layer = layer.name;
-        state.time = 0;
-        state.played = 0;
-        state.interrupted = false;
+        // Update layer-specific properties
+        storedState.layerIndex = layerIndex;
+        storedState.layer = layer.name;
+        storedState.time = 0;
+        storedState.played = 0;
+        storedState.interrupted = false;
 
         // Handle animation properties
-        if (!state.name || !this.animations.has(state.name)) {
-            state.type = MotionType.Clip;
-            state.length = 0;
-            state.time = 0;
-            state.speed = 0;
+        if (!storedState.name || !this.animations.has(storedState.name)) {
+            storedState.type = MotionType.Clip;
+            storedState.length = 0;
+            storedState.speed = 0;
         } else {
-            const anim = this.animations.get(state.name);
+            const anim = this.animations.get(storedState.name);
             if (anim) {
-                state.length = anim.to;
-                state.speed = 1.0;
-            }
-        }
-
-        // Handle transitions from the previous state
-        const prevState = this.currentStates.get(layerIndex);
-        if (prevState && prevState.transitions) {
-            // Copy any matching transitions to the new state
-            const matchingTransitions = prevState.transitions.filter(t => 
-                t.destination === state.name || t.anyState
-            );
-            if (matchingTransitions.length > 0) {
-                state.transitions = [...(state.transitions || []), ...matchingTransitions];
+                storedState.length = anim.to;
+                storedState.speed = 1.0;
             }
         }
 
@@ -478,11 +453,11 @@ export namespace TOOLKIT {
         this.activeTransitions.delete(layerIndex);
         
         // Set the state buffer in the layer and update current states
-        layer.animationStateMachine = state;
-        this.currentStates.set(layerIndex, state);
+        layer.animationStateMachine = storedState;
+        this.currentStates.set(layerIndex, storedState);
         
         // Notify observers of state change
-        this.onAnimationStateChangeObservable.notifyObservers({ layerIndex, state });
+        this.onAnimationStateChangeObservable.notifyObservers({ layerIndex, state: storedState });
     }
 
     /**
@@ -529,14 +504,24 @@ export namespace TOOLKIT {
                 // Check for new transitions
                 const transition = this.findValidTransition(currentState);
                 if (transition) {
-                    const targetState = this.createState(transition.destination, layer);
-                    this.activeTransitions.set(layerIndex, {
-                        from: currentState,
-                        to: targetState,
-                        transition,
-                        progress: 0
-                    });
-                    this.onAnimationTransitionObservable.notifyObservers({ layerIndex, from: currentState, to: targetState });
+                    // Get target state from namedStates
+                    const targetState = this.namedStates.get(transition.destination);
+                    if (targetState) {
+                        // Update layer-specific properties
+                        targetState.layerIndex = layerIndex;
+                        targetState.layer = layer.name;
+                        targetState.time = 0;
+                        targetState.played = 0;
+                        targetState.interrupted = false;
+
+                        this.activeTransitions.set(layerIndex, {
+                            from: currentState,
+                            to: targetState,
+                            transition,
+                            progress: 0
+                        });
+                        this.onAnimationTransitionObservable.notifyObservers({ layerIndex, from: currentState, to: targetState });
+                    }
                 }
             }
 
@@ -551,22 +536,6 @@ export namespace TOOLKIT {
             if (layer.avatarMask) {
                 this.applyAvatarMask(layer.avatarMask, currentState);
             }
-        }
-
-        private createState(stateName: string, layer: IAnimationLayer): MachineState {
-            const state = new MachineState();
-            state.name = stateName;
-            state.layerIndex = layer.index;
-            state.layer = layer.name;
-            
-            const anim = this.animations.get(stateName);
-            if (anim) {
-                state.type = MotionType.Clip;
-                state.length = anim.to;
-                state.time = 0;
-            }
-            
-            return state;
         }
 
         private findValidTransition(state: MachineState): ITransition | null {
