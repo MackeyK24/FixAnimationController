@@ -373,32 +373,13 @@ export namespace TOOLKIT {
 
             // Initialize layer's animation mask map
             layer.animationMaskMap = new Map<string, number>();
-
-            // Create initial state for each layer using named states
-            if (layer.animationStateMachine && layer.animationStateMachine.name) {
-                const storedState = this.namedStates.get(layer.animationStateMachine.name);
-                if (storedState) {
-                    const state = new MachineState();
-                    Object.assign(state, storedState);
-                    state.layerIndex = index;
-                    state.layer = layer.name;
-
-                    // Handle empty states
-                    if (!state.name || !this.animations.has(state.name)) {
-                        state.type = MotionType.Clip;
-                        state.length = 0;
-                        state.time = 0;
-                        state.speed = 0;
-                    } else {
-                        const anim = this.animations.get(state.name);
-                        if (anim) {
-                            state.length = anim.to;
-                        }
-                    }
-
-                    this.currentStates.set(index, state);
-                }
-            }
+            
+            // Layer's animation state machine will be set in setState()
+            // For now, create minimal empty state as required by type system
+            const emptyState = new MachineState();
+            emptyState.layerIndex = index;
+            emptyState.layer = layer.name;
+            layer.animationStateMachine = emptyState;
 
             // Initialize avatar mask if present
             if (layer.avatarMask) {
@@ -442,22 +423,25 @@ export namespace TOOLKIT {
             throw new Error(`Invalid layer index: ${layerIndex}`);
         }
 
-        // Get stored state from namedStates
+        // Get the state definition from namedStates
         const storedState = this.namedStates.get(stateName);
         if (!storedState) {
             throw new Error(`State '${stateName}' not found in machine configuration`);
         }
 
-        // Create a deep copy for runtime state
+        // Create runtime state buffer by deep copying the stored state
         const state = new MachineState();
         Object.assign(state, storedState);
         
-        // Deep copy transitions
+        // Deep copy transitions and blend tree
         if (storedState.transitions) {
             state.transitions = storedState.transitions.map(t => ({...t}));
         }
+        if (storedState.blendtree) {
+            state.blendtree = JSON.parse(JSON.stringify(storedState.blendtree));
+        }
         
-        // Set layer-specific properties
+        // Set layer-specific properties for runtime state
         state.layerIndex = layerIndex;
         state.layer = layer.name;
         state.time = 0;
@@ -474,6 +458,19 @@ export namespace TOOLKIT {
             const anim = this.animations.get(state.name);
             if (anim) {
                 state.length = anim.to;
+                state.speed = 1.0;
+            }
+        }
+
+        // Handle transitions from the previous state
+        const prevState = this.currentStates.get(layerIndex);
+        if (prevState && prevState.transitions) {
+            // Copy any matching transitions to the new state
+            const matchingTransitions = prevState.transitions.filter(t => 
+                t.destination === state.name || t.anyState
+            );
+            if (matchingTransitions.length > 0) {
+                state.transitions = [...(state.transitions || []), ...matchingTransitions];
             }
         }
 
