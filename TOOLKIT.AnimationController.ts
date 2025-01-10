@@ -374,12 +374,17 @@ export namespace TOOLKIT {
             // Initialize layer's animation mask map
             layer.animationMaskMap = new Map<string, number>();
             
-            // Layer's animation state machine will be set in setState()
-            // For now, create minimal empty state as required by type system
-            const emptyState = new MachineState();
-            emptyState.layerIndex = index;
-            emptyState.layer = layer.name;
-            layer.animationStateMachine = emptyState;
+            // Set initial state from machine configuration
+            if (layer.entry) {
+                const storedState = this.namedStates.get(layer.entry);
+                if (storedState) {
+                    this.setState(layer.entry, index);
+                } else {
+                    console.warn(`Entry state '${layer.entry}' not found for layer ${layer.name}`);
+                }
+            } else {
+                console.warn(`No entry state defined for layer ${layer.name}`);
+            }
 
             // Initialize avatar mask if present
             if (layer.avatarMask) {
