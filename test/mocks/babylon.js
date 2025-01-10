@@ -656,21 +656,6 @@ BABYLON.Matrix.FromValues = function(m11, m12, m13, m14, m21, m22, m23, m24, m31
     m[12] = m41; m[13] = m42; m[14] = m43; m[15] = m44;
     return matrix;
 };
-        return { elements: new Float32Array(16).fill(0) };
-    }
-};
-
-// Define Tools static methods
-BABYLON.Tools = {
-    _startTime: performance.now(),
-    get Now() {
-        return performance.now() - this._startTime;
-    }
-};
-
-// Make sure Now is also available as a method for backward compatibility
-BABYLON.Tools.Now.bind = function() { return BABYLON.Tools.Now; };
-
 // Add Animation Types
 BABYLON.Animation.ANIMATIONTYPE_FLOAT = 0;
 BABYLON.Animation.ANIMATIONTYPE_VECTOR3 = 1;
@@ -681,4 +666,4 @@ BABYLON.Animation.ANIMATIONTYPE_COLOR4 = 5;
 BABYLON.Animation.ANIMATIONTYPE_VECTOR2 = 6;
 BABYLON.Animation.ANIMATIONTYPE_SIZE = 7;
 
-module.exports = BABYLON;
+module.exports = { BABYLON };

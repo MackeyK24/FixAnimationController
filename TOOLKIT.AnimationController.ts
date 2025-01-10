@@ -659,7 +659,7 @@ namespace TOOLKIT {
             // Initialize weights if not set
             blendTree.children.forEach(child => {
                 if (typeof child.weight === 'undefined') {
-                    child.weight = 0;
+                    child.weight = 1.0 / blendTree.children.length; // Default to equal distribution
                 }
             });
             
@@ -677,17 +677,33 @@ namespace TOOLKIT {
                     break;
             }
 
+            // Normalize weights to prevent over-blending
+            const totalWeight = blendTree.children.reduce((sum, child) => sum + (child.weight || 0), 0);
+            if (totalWeight > 0) {
+                blendTree.children.forEach(child => {
+                    child.weight = (child.weight || 0) / totalWeight;
+                });
+            } else {
+                // If total weight is 0, distribute evenly
+                const equalWeight = 1.0 / blendTree.children.length;
+                blendTree.children.forEach(child => {
+                    child.weight = equalWeight;
+                });
+            }
+
+            // Apply layer weight with minimum epsilon
+            const layerWeight = Math.max(0.0001, layer.defaultWeight || 1.0);
+            const finalWeight = Math.max(0.0001, weight * layerWeight);
+
             // Sample animations with calculated weights
             blendTree.children.forEach(child => {
-                const childWeight = child.weight * weight;
-                if (childWeight > 0) {
-                    if (child.type === MotionType.Tree && child.subtree) {
-                        this.updateBlendTree(child.subtree, layer, childWeight);
-                    } else {
-                        const animation = this.animations.get(child.motion);
-                        if (animation) {
-                            this.sampleAnimationGroup(animation, this.currentTime * (child.timescale || 1), childWeight);
-                        }
+                const childWeight = child.weight * finalWeight;
+                if (child.type === MotionType.Tree && child.subtree) {
+                    this.updateBlendTree(child.subtree, layer, childWeight);
+                } else {
+                    const animation = this.animations.get(child.motion);
+                    if (animation) {
+                        this.sampleAnimationGroup(animation, this.currentTime * (child.timescale || 1), childWeight);
                     }
                 }
             });
@@ -700,10 +716,11 @@ namespace TOOLKIT {
             const children = tree.children;
             if (!children || children.length === 0) return;
 
-            // Initialize all weights to 0
+            // Initialize weights with minimum epsilon
+            const epsilon = 0.0001;
             children.forEach(child => {
                 if (!child.hasOwnProperty('weight')) {
-                    child.weight = 0;
+                    child.weight = epsilon;
                 }
             });
 
@@ -715,15 +732,24 @@ namespace TOOLKIT {
             // Sort children by threshold
             const sortedChildren = [...children].sort((a, b) => a.threshold - b.threshold);
 
-            // Handle value below first threshold
+            // Handle value below first threshold with smooth falloff
             if (value <= sortedChildren[0].threshold) {
-                sortedChildren[0].weight = 1;
+                const falloff = Math.max(epsilon, 1.0 - Math.abs(value - sortedChildren[0].threshold));
+                sortedChildren[0].weight = falloff;
+                if (sortedChildren.length > 1) {
+                    sortedChildren[1].weight = epsilon;
+                }
                 return;
             }
 
-            // Handle value above last threshold
+            // Handle value above last threshold with smooth falloff
             if (value >= sortedChildren[sortedChildren.length - 1].threshold) {
-                sortedChildren[sortedChildren.length - 1].weight = 1;
+                const lastIndex = sortedChildren.length - 1;
+                const falloff = Math.max(epsilon, 1.0 - Math.abs(value - sortedChildren[lastIndex].threshold));
+                sortedChildren[lastIndex].weight = falloff;
+                if (lastIndex > 0) {
+                    sortedChildren[lastIndex - 1].weight = epsilon;
+                }
                 return;
             }
 
@@ -734,8 +760,18 @@ namespace TOOLKIT {
 
                 if (value >= current.threshold && value <= next.threshold) {
                     const t = (value - current.threshold) / (next.threshold - current.threshold);
-                    current.weight = 1 - t;
-                    next.weight = t;
+                    // Ensure weights never go below epsilon
+                    current.weight = Math.max(epsilon, 1 - t);
+                    next.weight = Math.max(epsilon, t);
+                    
+                    // Normalize the weights
+                    const total = current.weight + next.weight;
+                    if (total > 0) {
+                        current.weight /= total;
+                        next.weight /= total;
+                    } else {
+                        current.weight = next.weight = 0.5; // Equal distribution if total is 0
+                    }
                     break;
                 }
             }
@@ -946,32 +982,59 @@ namespace TOOLKIT {
 
             const transformSet = new Set(mask.transformPaths);
             
-            // Apply mask to current animations with layer weight
+            // Store original transforms before applying mask
+            const originalTransforms = new Map<string, {
+                position?: BABYLON.Vector3;
+                rotation?: BABYLON.Quaternion;
+            }>();
+
+            // First pass: store original transforms
             this.animations.forEach(animation => {
                 animation.targetedAnimations.forEach(targetAnim => {
                     if (targetAnim.target instanceof BABYLON.TransformNode) {
-                        const path = targetAnim.target.name; // Assuming name matches transform path
+                        const path = targetAnim.target.name;
                         if (!transformSet.has(path)) {
-                            // Reset transform if not in mask
-                            if (targetAnim.target.position) {
-                                targetAnim.target.position.setAll(0);
-                            }
-                            if (targetAnim.target.rotationQuaternion) {
-                                targetAnim.target.rotationQuaternion.set(0, 0, 0, 1);
+                            originalTransforms.set(path, {
+                                position: targetAnim.target.position?.clone(),
+                                rotation: targetAnim.target.rotationQuaternion?.clone()
+                            });
+                        }
+                    }
+                });
+            });
+
+            // Second pass: apply mask with transform preservation
+            this.animations.forEach(animation => {
+                animation.targetedAnimations.forEach(targetAnim => {
+                    if (targetAnim.target instanceof BABYLON.TransformNode) {
+                        const path = targetAnim.target.name;
+                        if (!transformSet.has(path)) {
+                            // Restore original transform instead of resetting
+                            const original = originalTransforms.get(path);
+                            if (original) {
+                                if (targetAnim.target.position && original.position) {
+                                    targetAnim.target.position.copyFrom(original.position);
+                                }
+                                if (targetAnim.target.rotationQuaternion && original.rotation) {
+                                    targetAnim.target.rotationQuaternion.copyFrom(original.rotation);
+                                }
                             }
                         } else {
-                            // Apply layer weight to masked transforms
+                            // Apply layer weight to masked transforms with proper normalization
                             if (targetAnim.target.position) {
-                                targetAnim.target.position.scaleInPlace(_layerWeight);
+                                const weight = Math.max(0.0001, _layerWeight);
+                                targetAnim.target.position.scaleInPlace(weight);
                             }
                             if (targetAnim.target.rotationQuaternion) {
+                                const weight = Math.max(0.0001, _layerWeight);
                                 const identity = BABYLON.Quaternion.Identity();
                                 BABYLON.Quaternion.SlerpToRef(
                                     identity,
                                     targetAnim.target.rotationQuaternion,
-                                    _layerWeight,
+                                    weight,
                                     targetAnim.target.rotationQuaternion
                                 );
+                                targetAnim.target.rotationQuaternion.normalize();
                             }
                         }
                     }
