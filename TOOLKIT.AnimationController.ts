@@ -730,6 +730,10 @@ namespace TOOLKIT {
             return (this.parameters.get(name) != null);
         }
 
+        public getTrigger(name: string): boolean {
+            return this.parameters.get(name) || false;
+        }
+
         public setTrigger(name: string): void {
             if (this.parameterTypes.get(name) === AnimatorParameterType.Trigger) {
                 this.parameters.set(name, true);
