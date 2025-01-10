@@ -170,6 +170,7 @@ namespace TOOLKIT {
         public layerIndex: number = 0;
         public played: number = 0;
         public machine: string = "";
+        public motion: string = "";  // Animation clip name
         public motionid: number = 0;
         public interrupted: boolean = false;
         public apparentSpeed: number = 0;
@@ -192,6 +193,7 @@ namespace TOOLKIT {
         public events: IAnimatorEvent[] = [];
         public ccurves: any[] = [];
         public tcurves: BABYLON.Animation[] = [];
+        public transformSpace: 'local' | 'world' = 'local';  // Transform space for bone animations
     }
 
     /**
@@ -308,6 +310,13 @@ namespace TOOLKIT {
             throw new Error("Machine data is required for initialization");
         }
 
+        // Clear existing state
+        this._parameterValues.clear();
+        this.animations.clear();
+        this.currentStates.clear();
+        this.activeTransitions.clear();
+        this.namedStates.clear();
+
         // Store references
         this.rootBone = rootBone;
         
@@ -348,15 +357,22 @@ namespace TOOLKIT {
         }
 
         // Initialize states from machineJson.states
-        if (Array.isArray(machineJson.states)) {
-            machineJson.states.forEach((stateData: Partial<MachineState>) => {
+        if (machineJson.states) {
+            Object.entries(machineJson.states).forEach(([name, stateData]: [string, any]) => {
                 const state = new MachineState();
                 Object.assign(state, stateData);
+                state.name = name;  // Ensure name is set correctly
                 
-                // Store state by name for later retrieval
-                if (state.name) {
-                    this.namedStates.set(state.name, state);
+                // Initialize animation properties
+                if (state.motion && this.animations.has(state.motion)) {
+                    const anim = this.animations.get(state.motion);
+                    if (anim) {
+                        state.length = anim.to;
+                        state.speed = 1.0;
+                    }
                 }
+                
+                this.namedStates.set(name, state);
             });
         }
 
@@ -365,22 +381,35 @@ namespace TOOLKIT {
             throw new Error("Machine data must contain layers array");
         }
 
-        Object.assign(this.layers, machineJson.layers);
-        this.layers.forEach((layer, index) => {
-            if (!layer.name || typeof layer.index !== 'number') {
+        this.layers.length = 0;  // Clear existing layers
+        machineJson.layers.forEach((layerData: any) => {
+            const layer: IAnimationLayer = Object.assign({}, layerData);
+            layer.animationMaskMap = new Map<string, number>();
+            this.layers.push(layer);
+            
+            const index = layer.index;
+            if (typeof index !== 'number' || !layer.name) {
                 throw new Error(`Invalid layer definition at index ${index}`);
             }
 
-            // Initialize layer's animation mask map
-            layer.animationMaskMap = new Map<string, number>();
-            
             // Set initial state from machine configuration
-            if (layer.entry) {
-                const storedState = this.namedStates.get(layer.entry);
+            const entryStateName = layer.entry || (layer.animationStateMachine && layer.animationStateMachine.name);
+            if (entryStateName) {
+                const storedState = this.namedStates.get(entryStateName);
                 if (storedState) {
-                    this.setState(layer.entry, index);
+                    // Create a new state instance for the layer
+                    const layerState = new MachineState();
+                    Object.assign(layerState, storedState);
+                    layerState.layerIndex = index;
+                    layerState.layer = layer.name;
+                    layerState.time = 0;
+                    layerState.played = 0;
+                    
+                    // Set the state buffer in the layer
+                    layer.animationStateMachine = layerState;
+                    this.currentStates.set(index, layerState);
                 } else {
-                    console.warn(`Entry state '${layer.entry}' not found for layer ${layer.name}`);
+                    console.warn(`Entry state '${entryStateName}' not found for layer ${layer.name}`);
                 }
             } else {
                 console.warn(`No entry state defined for layer ${layer.name}`);
@@ -873,7 +902,45 @@ namespace TOOLKIT {
 
         private sampleAnimationGroup(animation: BABYLON.AnimationGroup, time: number, weight: number): void {
             const normalizedTime = time % animation.to;
-            animation.targetedAnimations.forEach(targetAnim => {
+            
+            // Store original transforms for proper blending
+            const originalTransforms = new Map<BABYLON.TransformNode, {
+                position: BABYLON.Vector3;
+                rotation: BABYLON.Quaternion;
+            }>();
+            
+            interface ITargetedAnimation {
+                animation: BABYLON.Animation;
+                target: BABYLON.TransformNode;
+            }
+
+            // First pass: store original transforms
+            animation.targetedAnimations.forEach((targetAnim: ITargetedAnimation) => {
+                if (targetAnim.target instanceof BABYLON.TransformNode) {
+                    originalTransforms.set(targetAnim.target, {
+                        position: targetAnim.target.position.clone(),
+                        rotation: targetAnim.target.rotationQuaternion ? 
+                            targetAnim.target.rotationQuaternion.clone() : 
+                            BABYLON.Quaternion.FromEulerAngles(
+                                targetAnim.target.rotation.x,
+                                targetAnim.target.rotation.y,
+                                targetAnim.target.rotation.z
+                            )
+                    });
+                }
+            });
+            
+            // Sort bones by hierarchy level (parent to child)
+            const sortedTargets = animation.targetedAnimations
+                .filter((targetAnim: ITargetedAnimation) => targetAnim.target instanceof BABYLON.TransformNode)
+                .sort((a: ITargetedAnimation, b: ITargetedAnimation) => {
+                    const depthA = this.getHierarchyDepth(a.target as BABYLON.TransformNode);
+                    const depthB = this.getHierarchyDepth(b.target as BABYLON.TransformNode);
+                    return depthA - depthB;
+                });
+            
+            // Second pass: apply animations in parent-to-child order
+            sortedTargets.forEach((targetAnim: ITargetedAnimation) => {
                 const keys = targetAnim.animation.getKeys();
                 if (keys.length < 2) return;
 
@@ -891,19 +958,37 @@ namespace TOOLKIT {
                 const frameDiff = key2.frame - key1.frame;
                 const fraction = frameDiff !== 0 ? (normalizedTime - key1.frame) / frameDiff : 0;
 
-                // Interpolate between keyframes
-                if (targetAnim.target instanceof BABYLON.TransformNode) {
-                    if (this.rootBone && targetAnim.target === this.rootBone) {
-                        this.extractRootMotion(key1.value, key2.value, fraction, weight);
-                    } else {
-                        this.interpolateTransform(targetAnim.target, key1.value, key2.value, fraction, weight);
+                // Restore original transform for proper blending
+                const target = targetAnim.target as BABYLON.TransformNode;
+                const original = originalTransforms.get(target);
+                if (original) {
+                    target.position.copyFrom(original.position);
+                    if (!target.rotationQuaternion) {
+                        target.rotationQuaternion = BABYLON.Quaternion.Identity();
                     }
+                    target.rotationQuaternion.copyFrom(original.rotation);
+                }
+
+                // Apply new transform with proper space handling
+                if (this.rootBone && target === this.rootBone) {
+                    this.extractRootMotion(key1.value, key2.value, fraction, weight);
+                } else {
+                    this.interpolateTransform(target, key1.value, key2.value, fraction, weight);
                 }
             });
         }
 
         private interpolateTransform(target: BABYLON.TransformNode, start: any, end: any, fraction: number, weight: number): void {
             if (!target || !start || !end) return;
+
+            // Get parent space transformation if needed
+            const parentInverseMatrix = target.parent ? target.parent.getWorldMatrix().clone().invert() : null;
+            const parentRotation = target.parent?.rotationQuaternion || 
+                (target.parent ? BABYLON.Quaternion.FromEulerAngles(
+                    target.parent.rotation.x,
+                    target.parent.rotation.y,
+                    target.parent.rotation.z
+                ) : null);
 
             if (start instanceof BABYLON.Vector3 && end instanceof BABYLON.Vector3) {
                 // Initialize position if needed
@@ -915,13 +1000,27 @@ namespace TOOLKIT {
                 const interpolated = new BABYLON.Vector3();
                 BABYLON.Vector3.LerpToRef(start, end, fraction, interpolated);
                 
-                // Apply weight blending in place
-                if (weight === 1.0) {
-                    target.position.copyFrom(interpolated);
+                // Convert to parent space if needed
+                if (parentInverseMatrix) {
+                    const localPos = BABYLON.Vector3.TransformCoordinates(interpolated, parentInverseMatrix);
+                    
+                    // Apply weight blending in local space
+                    if (weight === 1.0) {
+                        target.position.copyFrom(localPos);
+                    } else {
+                        target.position.scaleInPlace(1.0 - weight);
+                        localPos.scaleInPlace(weight);
+                        target.position.addInPlace(localPos);
+                    }
                 } else {
-                    target.position.scaleInPlace(1.0 - weight);
-                    interpolated.scaleInPlace(weight);
-                    target.position.addInPlace(interpolated);
+                    // Apply weight blending in world space
+                    if (weight === 1.0) {
+                        target.position.copyFrom(interpolated);
+                    } else {
+                        target.position.scaleInPlace(1.0 - weight);
+                        interpolated.scaleInPlace(weight);
+                        target.position.addInPlace(interpolated);
+                    }
                 }
             } else if (start instanceof BABYLON.Quaternion && end instanceof BABYLON.Quaternion) {
                 // Initialize rotation if needed
@@ -932,36 +1031,72 @@ namespace TOOLKIT {
                 // Interpolate between keyframes first
                 const interpolated = new BABYLON.Quaternion();
                 BABYLON.Quaternion.SlerpToRef(start, end, fraction, interpolated);
+                interpolated.normalize();
                 
-                // Apply weight blending in place and normalize
-                if (weight === 1.0) {
-                    target.rotationQuaternion.copyFrom(interpolated);
+                // Convert to parent space if needed
+                if (parentRotation) {
+                    const localRot = BABYLON.Quaternion.Inverse(parentRotation).multiply(interpolated);
+                    localRot.normalize();
+                    
+                    // Apply weight blending in local space
+                    if (weight === 1.0) {
+                        target.rotationQuaternion.copyFrom(localRot);
+                    } else {
+                        BABYLON.Quaternion.SlerpToRef(
+                            target.rotationQuaternion,
+                            localRot,
+                            weight,
+                            target.rotationQuaternion
+                        );
+                    }
                 } else {
-                    BABYLON.Quaternion.SlerpToRef(
-                        target.rotationQuaternion,
-                        interpolated,
-                        weight,
-                        target.rotationQuaternion
-                    );
+                    // Apply weight blending in world space
+                    if (weight === 1.0) {
+                        target.rotationQuaternion.copyFrom(interpolated);
+                    } else {
+                        BABYLON.Quaternion.SlerpToRef(
+                            target.rotationQuaternion,
+                            interpolated,
+                            weight,
+                            target.rotationQuaternion
+                        );
+                    }
                 }
                 
-                // Ensure quaternion is normalized
+                // Always normalize after blending
                 target.rotationQuaternion.normalize();
             }
+        }
+
+        private getHierarchyDepth(node: BABYLON.TransformNode): number {
+            let depth = 0;
+            let current = node;
+            while (current.parent) {
+                depth++;
+                current = current.parent;
+            }
+            return depth;
         }
 
         private extractRootMotion(start: any, end: any, _fraction: number, weight: number): void {
             if (start instanceof BABYLON.Vector3 && end instanceof BABYLON.Vector3) {
                 const delta = end.subtract(start);
-                this.rootMotionDelta.addInPlace(delta.scale(weight));
+                // Ensure minimum weight to prevent complete disappearance
+                const safeWeight = Math.max(0.0001, weight);
+                this.rootMotionDelta.addInPlace(delta.scale(safeWeight));
             } else if (start instanceof BABYLON.Quaternion && end instanceof BABYLON.Quaternion) {
                 const delta = end.multiply(BABYLON.Quaternion.Inverse(start));
+                delta.normalize();  // Ensure normalized quaternion
+                // Ensure minimum weight to prevent complete disappearance
+                const safeWeight = Math.max(0.0001, weight);
                 const newRotation = BABYLON.Quaternion.Slerp(
                     BABYLON.Quaternion.Identity(),
                     delta,
-                    weight
+                    safeWeight
                 );
+                newRotation.normalize();  // Ensure normalized quaternion
                 this._rootMotionRotation.copyFrom(newRotation.multiply(this._rootMotionRotation));
+                this._rootMotionRotation.normalize();  // Ensure final quaternion is normalized
             }
         }
 
