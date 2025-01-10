@@ -1,14 +1,66 @@
 import * as BABYLON from 'babylonjs';
 
 /** Babylon Toolkit Namespace */
-namespace TOOLKIT {
+export namespace TOOLKIT {
+    export interface IAnimationMachine {
+        parameters?: Array<{
+            name: string;
+            type: AnimatorParameterType;
+            defaultFloat?: number;
+            defaultInt?: number;
+            defaultBool?: boolean;
+        }>;
+        layers?: Array<{
+            name: string;
+            index: number;
+            entry: string;
+            defaultWeight: number;
+            avatarMask?: { [key: string]: number };
+        }>;
+        states?: Array<{
+            name: string;
+            layer: string;
+            layerIndex: number;
+            motion?: string;
+            loop?: boolean;
+            loopBlend?: boolean;
+            transitions?: IStateTransition[];
+            blendtree?: IBlendTree;
+            time?: number;
+            speed?: number;
+            to?: number;
+        }>;
+    }
+
     export class Utilities {
         public static QuaternionDiffToRef(q1: BABYLON.Quaternion, q2: BABYLON.Quaternion, result: BABYLON.Quaternion): void {
             q1.multiplyToRef(BABYLON.Quaternion.Inverse(q2), result);
         }
 
+        public static BlendQuaternionValue(target: BABYLON.Quaternion, value: BABYLON.Quaternion, weight: number): void {
+            BABYLON.Quaternion.SlerpToRef(target, value, weight, target);
+        }
+
         public static FastMatrixSlerp(start: BABYLON.Matrix, end: BABYLON.Matrix, amount: number, result: BABYLON.Matrix): void {
-            BABYLON.Matrix.LerpToRef(start, end, amount, result);
+            // Decompose matrices
+            const sourceScale = new BABYLON.Vector3();
+            const sourceRotation = new BABYLON.Quaternion();
+            const sourcePosition = new BABYLON.Vector3();
+            start.decompose(sourceScale, sourceRotation, sourcePosition);
+
+            const targetScale = new BABYLON.Vector3();
+            const targetRotation = new BABYLON.Quaternion();
+            const targetPosition = new BABYLON.Vector3();
+            end.decompose(targetScale, targetRotation, targetPosition);
+
+            // Interpolate values
+            const resultScale = BABYLON.Vector3.Lerp(sourceScale, targetScale, amount);
+            const resultRotation = new BABYLON.Quaternion();
+            BABYLON.Quaternion.SlerpToRef(sourceRotation, targetRotation, amount, resultRotation);
+            const resultPosition = BABYLON.Vector3.Lerp(sourcePosition, targetPosition, amount);
+
+            // Compose result matrix
+            BABYLON.Matrix.ComposeToRef(resultScale, resultRotation, resultPosition, result);
         }
     }
 
@@ -19,8 +71,15 @@ namespace TOOLKIT {
         Trigger = 4
     }
 
+    export enum BlendTreeType {
+        Simple1D = 1,
+        Simple2DDirectional = 2,
+        FreeformDirectional2D = 3,
+        FreeformCartesian2D = 4
+    }
+
     export interface IBlendTree {
-        blendType: number;
+        blendType: BlendTreeType;
         blendParameterX: string;
         blendParameterY?: string;
         children: Array<{
@@ -35,6 +94,21 @@ namespace TOOLKIT {
 
     export interface IMorphTarget {
         influence: number;
+    }
+
+    export interface ITransformBuffer {
+        position: BABYLON.Vector3 | null;
+        rotation: BABYLON.Quaternion | null;
+        scaling: BABYLON.Vector3 | null;
+        originalMatrix: BABYLON.Matrix | null;
+        blendingFactor: number;
+        blendingSpeed: number;
+        targetTransform: BABYLON.TransformNode | null;
+        positionBuffer: BABYLON.Vector3;
+        rotationBuffer: BABYLON.Quaternion;
+        scalingBuffer: BABYLON.Vector3;
+        rootPosition: BABYLON.Vector3 | null;
+        rootRotation: BABYLON.Quaternion | null;
     }
 
     export interface IAnimationState {
@@ -70,6 +144,16 @@ namespace TOOLKIT {
         threshold: number | boolean;
     }
 
+    export interface IVector2 {
+        x: number;
+        y: number;
+    }
+
+    export interface ITriangle {
+        points: BABYLON.Vector2[];
+        indices: number[];
+    }
+
     export class AnimationLayer {
         private currentState: IAnimationState | null;
         private states: Map<string, IAnimationState>;
@@ -88,15 +172,7 @@ namespace TOOLKIT {
         private _blenderMatrix: BABYLON.Matrix;
         private _updateMatrix: BABYLON.Matrix;
         private _dirtyBlenderMatrix: boolean;
-        private _transformBuffers: Map<string, {
-            position: BABYLON.Vector3 | null;
-            rotation: BABYLON.Quaternion | null;
-            scaling: BABYLON.Vector3 | null;
-            originalMatrix: BABYLON.Matrix | null;
-            blendingFactor: number;
-            blendingSpeed: number;
-            targetTransform: BABYLON.TransformNode | null;
-        }>;
+        private _transformBuffers: Map<string, ITransformBuffer>;
 
         constructor(layerData: any, index: number, machine: any) {
             this.currentState = null;
@@ -303,7 +379,12 @@ namespace TOOLKIT {
                         originalMatrix: null,
                         blendingFactor: 0,
                         blendingSpeed: 0.1, // Default blending speed
-                        targetTransform: target
+                        targetTransform: target,
+                        positionBuffer: new BABYLON.Vector3(0, 0, 0),
+                        rotationBuffer: new BABYLON.Quaternion(),
+                        scalingBuffer: new BABYLON.Vector3(1, 1, 1),
+                        rootPosition: null,
+                        rootRotation: null
                     });
                 }
 
@@ -323,10 +404,14 @@ namespace TOOLKIT {
                     if (!buffer.rotation) {
                         buffer.rotation = new BABYLON.Quaternion();
                     }
-                    const blendTarget = this._loopBlend && this._looptime && Math.abs(this.time - this.getLength()) < 0.001
-                        ? BABYLON.Quaternion.Slerp(value, this.sampleAnimationValue(target, 0) as BABYLON.Quaternion || value, 0.5)
-                        : value;
-                    buffer.rotation.copyFrom(blendTarget);
+                    if (this._loopBlend && this._looptime && Math.abs(this.time - this.getLength()) < 0.001) {
+                        // Handle loop blending with SLERP
+                        const nextValue = this.sampleAnimationValue(target, 0) as BABYLON.Quaternion || value;
+                        BABYLON.Quaternion.SlerpToRef(value, nextValue, 0.5, buffer.rotation);
+                    } else {
+                        // Use BlendQuaternionValue for consistent quaternion handling
+                        TOOLKIT.Utilities.BlendQuaternionValue(buffer.rotation, value, weight);
+                    }
                 }
 
                 // Compose and blend matrices at the end of the frame
@@ -347,11 +432,11 @@ namespace TOOLKIT {
                                 target.position
                             );
                         }
-                        this.matrixSlerp(buffer.originalMatrix, this._updateMatrix, buffer.blendingFactor, this._updateMatrix);
+                        this.fastMatrixSlerp(buffer.originalMatrix, this._updateMatrix, buffer.blendingFactor, this._updateMatrix);
                         buffer.blendingFactor += buffer.blendingSpeed;
                     }
 
-                    this.matrixSlerp(this._blenderMatrix, this._updateMatrix, weight, this._blenderMatrix);
+                    this.fastMatrixSlerp(this._blenderMatrix, this._updateMatrix, weight, this._blenderMatrix);
                     this._dirtyBlenderMatrix = true;
                 }
             } else if ((target as any).influence !== undefined) {
@@ -400,7 +485,9 @@ namespace TOOLKIT {
                 case BABYLON.Animation.ANIMATIONTYPE_VECTOR3:
                     return BABYLON.Vector3.Lerp(key1.value, key2.value, factor);
                 case BABYLON.Animation.ANIMATIONTYPE_QUATERNION:
-                    return BABYLON.Quaternion.Slerp(key1.value, key2.value, factor);
+                    const result = new BABYLON.Quaternion();
+                    BABYLON.Quaternion.SlerpToRef(key1.value, key2.value, factor, result);
+                    return result;
                 case BABYLON.Animation.ANIMATIONTYPE_FLOAT:
                     // Convert float to Vector3 for consistent handling
                     const floatValue = BABYLON.Scalar.Lerp(key1.value, key2.value, factor);
@@ -426,25 +513,8 @@ namespace TOOLKIT {
             return this._loopBlend;
         }
 
-        private matrixSlerp(source: BABYLON.Matrix, target: BABYLON.Matrix, weight: number, result: BABYLON.Matrix): void {
-            // Decompose matrices
-            const sourceScale = new BABYLON.Vector3();
-            const sourceRotation = new BABYLON.Quaternion();
-            const sourcePosition = new BABYLON.Vector3();
-            source.decompose(sourceScale, sourceRotation, sourcePosition);
-
-            const targetScale = new BABYLON.Vector3();
-            const targetRotation = new BABYLON.Quaternion();
-            const targetPosition = new BABYLON.Vector3();
-            target.decompose(targetScale, targetRotation, targetPosition);
-
-            // Interpolate components
-            const resultScale = BABYLON.Vector3.Lerp(sourceScale, targetScale, weight);
-            const resultRotation = BABYLON.Quaternion.Slerp(sourceRotation, targetRotation, weight);
-            const resultPosition = BABYLON.Vector3.Lerp(sourcePosition, targetPosition, weight);
-
-            // Compose result
-            BABYLON.Matrix.ComposeToRef(resultScale, resultRotation, resultPosition, result);
+        private fastMatrixSlerp(source: BABYLON.Matrix, target: BABYLON.Matrix, weight: number, result: BABYLON.Matrix): void {
+            TOOLKIT.Utilities.FastMatrixSlerp(source, target, weight, result);
         }
 
         public finalizeTransforms(): void {
@@ -452,21 +522,46 @@ namespace TOOLKIT {
                 if (this._dirtyBlenderMatrix) {
                     const target = buffer.targetTransform;
                     if (target) {
-                        // Decompose final blended matrix into target's local space
-                        this._blenderMatrix.decompose(
-                            target.scaling,
-                            target.rotationQuaternion || (target.rotationQuaternion = new BABYLON.Quaternion()),
-                            target.position
-                        );
+                        // Store original transform for blending if not already stored
+                        if (!buffer.originalMatrix) {
+                            buffer.originalMatrix = BABYLON.Matrix.Compose(
+                                target.scaling,
+                                target.rotationQuaternion || new BABYLON.Quaternion(),
+                                target.position
+                            );
+                        }
+
+                        // Initialize buffers if needed
+                        if (!buffer.positionBuffer) buffer.positionBuffer = new BABYLON.Vector3(0, 0, 0);
+                        if (!buffer.rotationBuffer) buffer.rotationBuffer = new BABYLON.Quaternion();
+                        if (!buffer.scalingBuffer) buffer.scalingBuffer = new BABYLON.Vector3(1, 1, 1);
+
+                        // Blend with original transform using proper quaternion interpolation
+                        const blendedMatrix = BABYLON.Matrix.Identity();
+                        const sourceScale = new BABYLON.Vector3();
+                        const sourceRotation = new BABYLON.Quaternion();
+                        const sourcePosition = new BABYLON.Vector3();
+                        buffer.originalMatrix.decompose(sourceScale, sourceRotation, sourcePosition);
+
+                        const targetScale = new BABYLON.Vector3();
+                        const targetRotation = new BABYLON.Quaternion();
+                        const targetPosition = new BABYLON.Vector3();
+                        this._blenderMatrix.decompose(targetScale, targetRotation, targetPosition);
+
+                        // Interpolate values with proper quaternion SLERP
+                        const resultScale = BABYLON.Vector3.Lerp(sourceScale, targetScale, buffer.blendingFactor);
+                        const resultRotation = new BABYLON.Quaternion();
+                        BABYLON.Quaternion.SlerpToRef(sourceRotation, targetRotation, buffer.blendingFactor, resultRotation);
+                        const resultPosition = BABYLON.Vector3.Lerp(sourcePosition, targetPosition, buffer.blendingFactor);
+
+                        // Compose result matrix
+                        BABYLON.Matrix.ComposeToRef(resultScale, resultRotation, resultPosition, blendedMatrix);
+
+                        // Apply final transform
+                        blendedMatrix.decompose(target.scaling, target.rotationQuaternion || new BABYLON.Quaternion(), target.position);
                     }
                 }
-                // Reset buffers
-                buffer.position = null;
-                buffer.rotation = null;
-                buffer.scaling = null;
             });
-            this._dirtyBlenderMatrix = false;
-            this._blenderMatrix = BABYLON.Matrix.Identity();
         }
     }
 
@@ -542,10 +637,6 @@ namespace TOOLKIT {
             this.rootMotionRotation = new BABYLON.Quaternion();
             this.lastMotionPosition = new BABYLON.Vector3();
             this.lastMotionRotation = new BABYLON.Quaternion();
-            this.rootMotionPosition = new BABYLON.Vector3();
-            this.rootMotionRotation = new BABYLON.Quaternion();
-            this.lastMotionPosition = new BABYLON.Vector3();
-            this.lastMotionRotation = new BABYLON.Quaternion();
             
             // Initialize motion tracking
             this.rootMotionSpeed = 0;
@@ -605,412 +696,8 @@ namespace TOOLKIT {
             }
         }
 
-        public update(deltaTime: number): void {
-            if (!this.initialized) return;
-            
-            this._deltaTime = deltaTime;
-
-            // Scale delta time by speed ratio
-            const scaledDeltaTime = deltaTime * this.speedRatio;
-
-            // Update each layer in order (lower layers first)
-            this.layers.forEach(layer => {
-                // Process state machine for layer
-                layer.update(scaledDeltaTime, this.parameters);
-
-                // Sample and blend animations if not in EMPTY state
-                const state = layer.getCurrentState();
-                if (state && (state.motion || state.blendtree)) {
-                    this.processAnimations(layer, scaledDeltaTime);
-                    // Finalize transforms after processing animations
-                    layer.finalizeTransforms();
-                }
-            });
-
-            // Update timing properties from active layer
-            const activeLayer = this.layers[0]; // Use first layer for root motion
-            if (activeLayer) {
-                this._frametime = activeLayer.getFrametime();
-                this._length = activeLayer.getLength();
-                this._looptime = activeLayer.getLooptime();
-                this._loopblend = activeLayer.getLoopBlend();
-            }
-
-            // Process root motion if enabled
-            if (this.applyRootMotion && this.rootBone) {
-                // Extract root motion from animation
-                const rootMotion = this.extractRootMotion(activeLayer, scaledDeltaTime);
-                if (rootMotion) {
-                    // Reset root motion matrix
-                    this.rootMotionMatrix.reset();
-                    this._dirtyMotionMatrix = false;
-
-                    // Process root motion matrix
-                    BABYLON.Matrix.ComposeToRef(
-                        this.emptyScaling,
-                        (rootMotion.rotation || this.emptyRotation),
-                        (rootMotion.position || this.emptyPosition),
-                        this.updateMatrix
-                    );
-                    TOOLKIT.Utilities.FastMatrixSlerp(this.rootMotionMatrix, this.updateMatrix, 1.0, this.rootMotionMatrix);
-                    this._dirtyMotionMatrix = true;
-
-                    // Apply matrix blending with layer weight
-                    this.matrixSlerp(
-                        this.rootMotionMatrix,
-                        this.updateMatrix,
-                        activeLayer.getAvatarMaskWeight(this.rootBone),
-                        this.rootMotionMatrix
-                    );
-
-                    // Convert to world space if we have a parent
-                    if (this.rootBone && this.rootBone.parent) {
-                        const parentWorldMatrix = this.rootBone.parent.getWorldMatrix();
-                        this.rootMotionMatrix.multiplyToRef(parentWorldMatrix, this.rootMotionMatrix);
-                    }
-                    this._dirtyMotionMatrix = true;
-
-                    // Process root motion matrix
-                    if (this._dirtyMotionMatrix) {
-                        this.rootMotionMatrix.decompose(undefined, this.rootMotionRotation, this.rootMotionPosition);
-
-                        // Calculate root motion deltas based on frame
-                        if (this.isFirstFrame()) {
-                            this.deltaPosition.copyFrom(this.rootMotionPosition);
-                            this.deltaRotation.copyFrom(this.rootMotionRotation);
-                        } else if (this.isLastFrame()) {
-                            this.rootMotionPosition.subtractToRef(this.lastMotionPosition, this.deltaPosition);
-                            TOOLKIT.Utilities.QuaternionDiffToRef(this.rootMotionRotation, this.lastMotionRotation, this.deltaRotation);
-
-                            if (this._looptime && this._loopblend) {
-                                // Handle loop blending
-                                let loopBlendSpeed = (this.loopMotionSpeed + this.lastMotionSpeed);
-                                if (loopBlendSpeed !== 0) loopBlendSpeed = loopBlendSpeed / 2;
-                                this.deltaPosition.normalize();
-                                this.deltaPosition.scaleInPlace(loopBlendSpeed * deltaTime);
-
-                                let loopBlendRotate = (this.loopRotateSpeed + this.lastRotateSpeed);
-                                if (loopBlendRotate !== 0) loopBlendRotate = loopBlendRotate / 2;
-                                this.deltaRotation.toEulerAnglesToRef(this.angularVelocity);
-                                BABYLON.Quaternion.FromEulerAnglesToRef(
-                                    this.angularVelocity.x,
-                                    loopBlendRotate,
-                                    this.angularVelocity.z,
-                                    this.deltaRotation
-                                );
-                            }
-                        } else {
-                            this.rootMotionPosition.subtractToRef(this.lastMotionPosition, this.deltaPosition);
-                            TOOLKIT.Utilities.QuaternionDiffToRef(this.rootMotionRotation, this.lastMotionRotation, this.deltaRotation);
-                        }
-
-                        // Calculate motion speed and angular velocity
-                        const deltaSpeed = this.deltaPosition.length();
-                        this.rootMotionSpeed = deltaSpeed > 0 ? deltaSpeed / deltaTime : deltaSpeed;
-                        this.deltaRotation.toEulerAnglesToRef(this.angularVelocity);
-
-                        // Update last frame values
-                        this.lastMotionPosition.copyFrom(this.rootMotionPosition);
-                        this.lastMotionRotation.copyFrom(this.rootMotionRotation);
-                        this.lastMotionSpeed = this.rootMotionSpeed;
-                        this.lastRotateSpeed = this.angularVelocity.y;
-
-                        // Store initial frame values for looping
-                        if (activeLayer.getFrametime() === 0) {
-                            this.loopMotionSpeed = this.rootMotionSpeed;
-                            this.loopRotateSpeed = this.angularVelocity.y;
-                        }
-
-                        // Apply root motion to transform based on configuration
-                        if (this.applyWorldMotion) {
-                            // World-space root motion (Unity-like behavior)
-                            if (this.rootBone.parent) {
-                                const parentWorld = this.rootBone.parent.getWorldMatrix();
-                                const parentInverse = parentWorld.clone();
-                                parentInverse.invert();
-                                const localDelta = BABYLON.Vector3.TransformCoordinates(this.deltaPosition, parentInverse);
-                                
-                                // Apply position based on blend settings
-                                if (this.loopBlendPositionY && this.loopBlendPositionXZ) {
-                                    // Bake XYZ into pose
-                                    this.rootBone.position.addInPlace(localDelta);
-                                } else if (!this.loopBlendPositionY && !this.loopBlendPositionXZ) {
-                                    // Use XYZ as root motion
-                                    const worldDelta = BABYLON.Vector3.TransformCoordinates(localDelta, parentWorld);
-                                    this.rootBone.position.addInPlace(worldDelta);
-                                } else {
-                                    // Selective axis blending
-                                    const worldDelta = BABYLON.Vector3.TransformCoordinates(localDelta, parentWorld);
-                                    if (this.loopBlendPositionXZ) {
-                                        localDelta.x = worldDelta.x;
-                                        localDelta.z = worldDelta.z;
-                                    }
-                                    if (this.loopBlendPositionY) {
-                                        localDelta.y = worldDelta.y;
-                                    }
-                                    this.rootBone.position.addInPlace(localDelta);
-                                }
-                            } else {
-                                this.rootBone.position.addInPlace(this.deltaPosition);
-                            }
-                        } else {
-                            // Local-space root motion
-                            this.rootBone.position.addInPlace(this.deltaPosition);
-                        }
-                        
-                        // Apply rotation
-                        if (!this.rootBone.rotationQuaternion) {
-                            this.rootBone.rotationQuaternion = new BABYLON.Quaternion();
-                        }
-                        this.rootBone.rotationQuaternion.multiplyInPlace(this.deltaRotation);
-                    }
-
-                    if (this._dirtyMotionMatrix) {
-                        // Extract final transforms
-                        this.rootMotionMatrix.decompose(
-                            BABYLON.Vector3.One(),
-                            this.rootMotionRotation,
-                            this.rootMotionPosition
-                        );
-
-                        // Calculate deltas and velocities
-                        if (this.isFirstFrame()) {
-                            this.deltaPosition.copyFrom(this.rootMotionPosition);
-                            this.deltaRotation.copyFrom(this.rootMotionRotation);
-                        } else if (this.isLastFrame() && activeLayer.getLooptime() && activeLayer.getLoopBlend()) {
-                            // Handle loop blending
-                            this.rootMotionPosition.subtractToRef(this.lastMotionPosition, this.deltaPosition);
-                            
-                            // Smooth position
-                            const loopBlendSpeed = (this.loopMotionSpeed + this.lastMotionSpeed) / 2;
-                            this.deltaPosition.normalize();
-                            this.deltaPosition.scaleInPlace(loopBlendSpeed * scaledDeltaTime);
-                            
-                            // Smooth rotation
-                            const loopBlendRotate = (this.loopRotateSpeed + this.lastRotateSpeed) / 2;
-                            this.deltaRotation.toEulerAnglesToRef(this.angularVelocity);
-                            BABYLON.Quaternion.FromEulerAnglesToRef(
-                                this.angularVelocity.x,
-                                loopBlendRotate,
-                                this.angularVelocity.z,
-                                this.deltaRotation
-                            );
-                        } else {
-                            this.rootMotionPosition.subtractToRef(this.lastMotionPosition, this.deltaPosition);
-                            this.rootMotionRotation.toEulerAnglesToRef(this.angularVelocity);
-                        }
-
-                        // Update motion tracking
-                        const deltaSpeed = this.deltaPosition.length();
-                        this.rootMotionSpeed = deltaSpeed > 0 ? deltaSpeed / scaledDeltaTime : deltaSpeed;
-                        
-                        // Store current values for next frame
-                        this.lastMotionPosition.copyFrom(this.rootMotionPosition);
-                        this.lastMotionRotation.copyFrom(this.rootMotionRotation);
-                        this.lastMotionSpeed = this.rootMotionSpeed;
-                        this.lastRotateSpeed = this.angularVelocity.y;
-
-                        if (this._frametime === 0) {
-                            this.loopMotionSpeed = this.rootMotionSpeed;
-                            this.loopRotateSpeed = this.angularVelocity.y;
-                        }
-
-                        // Apply to root bone in world space
-                        if (this.rootBone.parent) {
-                            const parentInverse = this.rootBone.parent.getWorldMatrix().clone();
-                            parentInverse.invert();
-                            
-                            // Convert deltas to local space
-                            const localDelta = BABYLON.Vector3.TransformCoordinates(
-                                this.deltaPosition,
-                                parentInverse
-                            );
-                            this.rootBone.position.addInPlace(localDelta);
-                        } else {
-                            this.rootBone.position.addInPlace(this.deltaPosition);
-                        }
-
-                        if (!this.rootBone.rotationQuaternion) {
-                            this.rootBone.rotationQuaternion = new BABYLON.Quaternion();
-                        }
-                        this.rootBone.rotationQuaternion.multiplyInPlace(this.deltaRotation);
-                    }
-                }
-            }
-        }
-
-        private processAnimations(layer: AnimationLayer, deltaTime: number): void {
-            const state = layer.getCurrentState();
-            if (!state || !state.blendtree) return;
-
-            // Process blend tree
-            this.processBlendTree(state.blendtree, layer, deltaTime);
-        }
-
-        private processBlendTree(tree: IBlendTree, layer: AnimationLayer, deltaTime: number): void {
-            if (!tree.children || tree.children.length === 0) return;
-
-            // Calculate blend weights
-            const weights = this.calculateBlendWeights(tree);
-
-            // Sample and blend animations
-            tree.children.forEach((child: any) => {
-                if (child.weight > 0) {
-                    const clip = this.animationGroups.get(child.motion);
-                    if (clip) {
-                        this.sampleAndBlendAnimation(clip, child.weight, layer, deltaTime);
-                    }
-                }
-            });
-        }
-
-        private calculateBlendWeights(tree: IBlendTree): any[] {
-            const weights: any[] = [];
-            const paramX = this.getFloat(tree.blendParameterX);
-            const paramY = tree.blendParameterY ? this.getFloat(tree.blendParameterY) : 0;
-
-            switch (tree.blendType) {
-                case 1: // Simple 1D
-                    this.calculate1DBlendWeights(tree, paramX, weights);
-                    break;
-                case 2: // Simple 2D Directional
-                    this.calculate2DDirectionalBlendWeights(tree, paramX, paramY, weights);
-                    break;
-                case 3: // Freeform 2D Directional
-                    this.calculate2DFreeformDirectionalBlendWeights(tree, paramX, paramY, weights);
-                    break;
-                case 4: // Freeform 2D Cartesian
-                    this.calculate2DFreeformCartesianBlendWeights(tree, paramX, paramY, weights);
-                    break;
-            }
-            return weights;
-        }
-
-        private calculate1DBlendWeights(tree: IBlendTree, paramX: number, weights: any[]): void {
-            tree.children.forEach((child: any, index: number) => {
-                const threshold = child.threshold;
-                const nextThreshold = index < tree.children.length - 1 ? tree.children[index + 1].threshold : threshold;
-                
-                let weight = 0;
-                if (paramX <= threshold) {
-                    weight = index === 0 ? 1 : 0;
-                } else if (paramX >= nextThreshold) {
-                    weight = index === tree.children.length - 1 ? 1 : 0;
-                } else {
-                    weight = 1 - (paramX - threshold) / (nextThreshold - threshold);
-                }
-                weights.push({ motion: child.motion, weight });
-            });
-        }
-
-        private calculate2DDirectionalBlendWeights(tree: IBlendTree, paramX: number, paramY: number, weights: any[]): void {
-            const angle = Math.atan2(paramY, paramX);
-            const magnitude = Math.sqrt(paramX * paramX + paramY * paramY);
-
-            tree.children.forEach((child: any) => {
-                const posY = child.positionY || 0;
-                const posX = child.positionX || 0;
-                const childAngle = Math.atan2(posY, posX);
-                const angleDiff = Math.abs(BABYLON.Scalar.NormalizeRadians(angle - childAngle));
-                const weight = 1 - (angleDiff / Math.PI);
-                weights.push({ motion: child.motion, weight: Math.max(0, weight) * magnitude });
-            });
-
-            // Normalize weights
-            const totalWeight = weights.reduce((sum: number, w: any) => sum + w.weight, 0);
-            if (totalWeight > 0) {
-                weights.forEach(w => w.weight /= totalWeight);
-            }
-        }
-
-        private calculate2DFreeformDirectionalBlendWeights(tree: IBlendTree, paramX: number, paramY: number, weights: any[]): void {
-            const position = new BABYLON.Vector2(paramX, paramY);
-            
-            tree.children.forEach((child: any) => {
-                const childPos = new BABYLON.Vector2(child.positionX || 0, child.positionY || 0);
-                const distance = BABYLON.Vector2.Distance(position, childPos);
-                const maxRadius = tree.maxRadius || 1; // Default to 1 if not specified
-                const weight = Math.max(0, 1 - distance / maxRadius);
-                weights.push({ motion: child.motion, weight });
-            });
-
-            // Normalize weights
-            const totalWeight = weights.reduce((sum: number, w: any) => sum + w.weight, 0);
-            if (totalWeight > 0) {
-                weights.forEach(w => w.weight /= totalWeight);
-            }
-        }
-
-        private calculate2DFreeformCartesianBlendWeights(tree: IBlendTree, paramX: number, paramY: number, weights: any[]): void {
-            const position = new BABYLON.Vector2(paramX, paramY);
-            
-            // Find the triangle containing the current position
-            const triangles = this.triangulate2DPoints(tree.children);
-            const containingTriangle = triangles.find(triangle => 
-                this.pointInTriangle(position, 
-                    new BABYLON.Vector2(triangle[0].positionX || 0, triangle[0].positionY || 0),
-                    new BABYLON.Vector2(triangle[1].positionX || 0, triangle[1].positionY || 0),
-                    new BABYLON.Vector2(triangle[2].positionX || 0, triangle[2].positionY || 0)
-                )
-            );
-
-            if (containingTriangle) {
-                // Calculate barycentric coordinates
-                const barycentricWeights = this.calculateBarycentricWeights(
-                    position,
-                    new BABYLON.Vector2(containingTriangle[0].positionX, containingTriangle[0].positionY),
-                    new BABYLON.Vector2(containingTriangle[1].positionX, containingTriangle[1].positionY),
-                    new BABYLON.Vector2(containingTriangle[2].positionX, containingTriangle[2].positionY)
-                );
-
-                weights.push(
-                    { motion: containingTriangle[0].motion, weight: barycentricWeights.x },
-                    { motion: containingTriangle[1].motion, weight: barycentricWeights.y },
-                    { motion: containingTriangle[2].motion, weight: barycentricWeights.z }
-                );
-            }
-        }
-
-        private triangulate2DPoints(points: any[]): any[][] {
-            // Simple triangulation - for more complex cases, consider using a proper triangulation library
-            const triangles: any[][] = [];
-            if (points.length >= 3) {
-                const center = points[0];
-                for (let i = 1; i < points.length - 1; i++) {
-                    triangles.push([center, points[i], points[i + 1]]);
-                }
-            }
-            return triangles;
-        }
-
-        private pointInTriangle(p: BABYLON.Vector2, a: BABYLON.Vector2, b: BABYLON.Vector2, c: BABYLON.Vector2): boolean {
-            const area = 0.5 * (-b.y * c.x + a.y * (-b.x + c.x) + a.x * (b.y - c.y) + b.x * c.y);
-            const s = 1 / (2 * area) * (a.y * c.x - a.x * c.y + (c.y - a.y) * p.x + (a.x - c.x) * p.y);
-            const t = 1 / (2 * area) * (a.x * b.y - a.y * b.x + (a.y - b.y) * p.x + (b.x - a.x) * p.y);
-            return s >= 0 && t >= 0 && (1 - s - t) >= 0;
-        }
-
-        private calculateBarycentricWeights(p: BABYLON.Vector2, a: BABYLON.Vector2, b: BABYLON.Vector2, c: BABYLON.Vector2): BABYLON.Vector3 {
-            const v0 = b.subtract(a);
-            const v1 = c.subtract(a);
-            const v2 = p.subtract(a);
-            
-            const d00 = BABYLON.Vector2.Dot(v0, v0);
-            const d01 = BABYLON.Vector2.Dot(v0, v1);
-            const d11 = BABYLON.Vector2.Dot(v1, v1);
-            const d20 = BABYLON.Vector2.Dot(v2, v0);
-            const d21 = BABYLON.Vector2.Dot(v2, v1);
-            
-            const denom = d00 * d11 - d01 * d01;
-            const v = (d11 * d20 - d01 * d21) / denom;
-            const w = (d00 * d21 - d01 * d20) / denom;
-            const u = 1.0 - v - w;
-            
-            return new BABYLON.Vector3(u, v, w);
-        }
-
         private sampleAndBlendAnimation(clip: BABYLON.AnimationGroup, weight: number, layer: AnimationLayer, deltaTime: number): void {
-            clip.targetedAnimations.forEach(target => {
+            clip.targetedAnimations.forEach((target: BABYLON.TargetedAnimation) => {
                 if (target.target instanceof BABYLON.TransformNode) {
                     // Check avatar mask
                     if (layer.checkAvatarMask(target.target)) {
@@ -1018,8 +705,24 @@ namespace TOOLKIT {
                         const time = layer.getAnimationTime();
                         const value = this.sampleAnimationTrack(target, time);
                         
-                        // Blend value with layer weight
-                        layer.blendTransformValue(target.target, value, weight);
+                        if (value) {
+                            // Initialize rotation quaternion if needed
+                            if (value instanceof BABYLON.Quaternion && !target.target.rotationQuaternion) {
+                                target.target.rotationQuaternion = new BABYLON.Quaternion();
+                            }
+
+                            // Blend value with layer weight
+                            if (value instanceof BABYLON.Quaternion) {
+                                // Use SLERP for quaternions
+                                const currentRot = target.target.rotationQuaternion || new BABYLON.Quaternion();
+                                const blendedRot = new BABYLON.Quaternion();
+                                BABYLON.Quaternion.SlerpToRef(currentRot, value, weight, blendedRot);
+                                layer.blendTransformValue(target.target, blendedRot, weight);
+                            } else {
+                                // Use regular blending for other types
+                                layer.blendTransformValue(target.target, value, weight);
+                            }
+                        }
                     }
                 }
             });
@@ -1100,7 +803,8 @@ namespace TOOLKIT {
                             const currentRot = this.sampleAnimationTrack(rotAnim, currentTime) as BABYLON.Quaternion;
                             const nextRot = this.sampleAnimationTrack(rotAnim, nextTime) as BABYLON.Quaternion;
                             if (currentRot && nextRot) {
-                                deltaRotation = nextRot.multiply(BABYLON.Quaternion.Inverse(currentRot));
+                                // Use QuaternionDiffToRef for more accurate rotation delta
+                                TOOLKIT.Utilities.QuaternionDiffToRef(currentRot, nextRot, deltaRotation);
                             }
                         }
 
@@ -1307,25 +1011,8 @@ namespace TOOLKIT {
         }
 
         // State control
-        private matrixSlerp(source: BABYLON.Matrix, target: BABYLON.Matrix, weight: number, result: BABYLON.Matrix): void {
-            // Decompose matrices
-            const sourceScale = new BABYLON.Vector3();
-            const sourceRotation = new BABYLON.Quaternion();
-            const sourcePosition = new BABYLON.Vector3();
-            source.decompose(sourceScale, sourceRotation, sourcePosition);
-
-            const targetScale = new BABYLON.Vector3();
-            const targetRotation = new BABYLON.Quaternion();
-            const targetPosition = new BABYLON.Vector3();
-            target.decompose(targetScale, targetRotation, targetPosition);
-
-            // Interpolate components
-            const resultScale = BABYLON.Vector3.Lerp(sourceScale, targetScale, weight);
-            const resultRotation = BABYLON.Quaternion.Slerp(sourceRotation, targetRotation, weight);
-            const resultPosition = BABYLON.Vector3.Lerp(sourcePosition, targetPosition, weight);
-
-            // Compose result
-            BABYLON.Matrix.ComposeToRef(resultScale, resultRotation, resultPosition, result);
+        private fastMatrixSlerp(source: BABYLON.Matrix, target: BABYLON.Matrix, weight: number, result: BABYLON.Matrix): void {
+            TOOLKIT.Utilities.FastMatrixSlerp(source, target, weight, result);
         }
 
         public setState(stateName: string, layerIndex: number = 0): void {
