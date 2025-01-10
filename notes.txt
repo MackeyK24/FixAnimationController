@@ -1,0 +1,48 @@
+Investigation Notes:
+
+1. State Structure in machine.json
+- States are defined at root level under machine.states array
+- Each state contains:
+  - name: unique identifier
+  - layer: which layer it belongs to
+  - layerIndex: numeric index of the layer
+  - type: animation type (0=Clip, 1=Tree)
+  - transitions: array of possible state transitions
+  - blendtree: optional blend tree configuration
+  - motion: animation clip reference
+  - machine: layer name reference
+
+2. Layer Structure
+- Layers are defined under machine.layers array
+- Each layer contains:
+  - name: layer identifier
+  - index: numeric ordering
+  - entry: name of initial state
+  - avatarMask: optional bone targeting
+  - defaultWeight: layer blending weight
+  - NO states array (states are at root level)
+
+3. State-Layer Relationship
+- States reference layers through "layer" property
+- Layers reference initial state through "entry" property
+- Transitions are scoped to states within same layer
+- States can be filtered by layer name/index
+
+4. Legacy Implementation (AnimationState.ts)
+- Correctly uses machine.states array for state management
+- Maps states to layers using layer property
+- Uses layer.entry to set initial state
+- Maintains state references in _data Map
+
+5. Current Implementation Issues
+- Incorrectly looks for states in layer data
+- Should read states from machine.states array
+- Need to filter states by layer property
+- Should use layer.entry for initial state
+
+6. State Management Requirements
+- Read states from machine.states array
+- Filter states by layer property
+- Use layer.entry for initial state
+- Support transitions within layers
+- Handle blend trees per state
