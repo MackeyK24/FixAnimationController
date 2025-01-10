@@ -29,6 +29,8 @@ export namespace TOOLKIT {
 
     export interface IAnimationState {
         name: string;
+        layer: string;
+        layerIndex: number;
         motion?: BABYLON.AnimationGroup;
         loop?: boolean;
         loopBlend?: boolean;
@@ -44,6 +46,11 @@ export namespace TOOLKIT {
         hasExitTime: boolean;
         exitTime?: number;
         isAny?: boolean;
+        layerIndex: number;
+        layer?: string;
+        duration?: number;
+        fixedDuration?: boolean;
+        offset?: number;
         conditions?: ITransitionCondition[];
     }
 
@@ -76,6 +83,7 @@ export namespace TOOLKIT {
         private time: number;
         private speed: number;
         private index: number;
+        private name: string;
         private defaultWeight: number;
         private mixers: Map<string, AnimationMixer>;
         private _loopBlend: boolean;
@@ -83,7 +91,7 @@ export namespace TOOLKIT {
         private _frametime: number;
         private _looptime: boolean;
 
-        constructor(layerData: any, index: number) {
+        constructor(layerData: any, index: number, machine: any) {
             this.currentState = null;
             this.states = new Map();
             this.avatarMask = new Map();
@@ -91,15 +99,19 @@ export namespace TOOLKIT {
             this.time = 0;
             this.speed = 1;
             this.index = index;
+            this.name = layerData.name;
             this.defaultWeight = layerData.defaultWeight || 1;
             this._loopBlend = false;
             this._length = 0;
             this._frametime = 0;
             this._looptime = false;
 
-            // Setup states
-            if (layerData.stateMachine && layerData.stateMachine.states) {
-                layerData.stateMachine.states.forEach((stateData: any) => {
+            // Setup states from machine.states filtered by layer
+            if (machine.states) {
+                const layerStates = machine.states.filter((state: any) => 
+                    state.layerIndex === index || state.layer === layerData.name
+                );
+                layerStates.forEach((stateData: any) => {
                     this.states.set(stateData.name, stateData);
                 });
             }
@@ -118,14 +130,36 @@ export namespace TOOLKIT {
         }
 
         public setState(stateName: string): void {
+            if (!stateName || stateName === "") {
+                console.warn("Invalid state name provided");
+                return;
+            }
+
             const state = this.states.get(stateName);
-            if (state) {
+            if (!state) {
+                console.warn(`State ${stateName} not found`);
+                return;
+            }
+
+            // Verify state belongs to this layer
+            if (state.layerIndex === this.index || state.layer === this.name) {
+                // Initialize state properties
                 this.currentState = state;
                 this.time = 0;
                 this._frametime = 0;
                 this._loopBlend = state.loopBlend || false;
                 this._looptime = state.loop || false;
                 this._length = state.motion?.to || 0;
+
+                // Reset animation properties
+                this.mixers.forEach(mixer => {
+                    mixer.position.set(0, 0, 0);
+                    mixer.rotation.set(0, 0, 0, 1);
+                    mixer.scaling.set(1, 1, 1);
+                    mixer.blendWeight = 0;
+                });
+            } else {
+                console.warn(`State ${stateName} does not belong to layer ${this.name} (index: ${this.index})`);
             }
         }
 
@@ -166,30 +200,62 @@ export namespace TOOLKIT {
             if (!this.currentState || !this.currentState.transitions) return;
 
             for (const transition of this.currentState.transitions) {
+                // Skip transitions that don't belong to this layer
+                if (transition.layerIndex !== this.index) continue;
+
                 if (this.evaluateTransition(transition, parameters)) {
-                    this.setState(transition.destination);
-                    break;
+                    // Verify destination state exists and belongs to this layer
+                    const destState = this.states.get(transition.destination);
+                    if (destState && (destState.layerIndex === this.index || destState.layer === this.name)) {
+                        this.setState(transition.destination);
+                        break;
+                    } else {
+                        console.warn(`Invalid transition destination: ${transition.destination} for layer ${this.name}`);
+                    }
                 }
             }
         }
 
         private evaluateTransition(transition: IStateTransition, parameters: Map<string, any>): boolean {
-            if (!transition.conditions) return true;
+            // Skip transitions for different layers
+            if (transition.layerIndex !== this.index) return false;
+
+            // Handle ANY state transitions
             if (transition.isAny) return true;
 
+            // Check exit time if specified
+            if (transition.hasExitTime) {
+                const exitTimeNormalized = transition.exitTime || 0;
+                const currentTimeNormalized = this.time / this._length;
+                if (currentTimeNormalized < exitTimeNormalized) {
+                    return false;
+                }
+            }
+
+            // If no conditions, transition is valid
+            if (!transition.conditions || transition.conditions.length === 0) {
+                return transition.hasExitTime ? true : false;
+            }
+
+            // Check all conditions
             return transition.conditions.every(condition => {
                 const paramValue = parameters.get(condition.parameter);
-                const threshold = condition.threshold;
+                if (paramValue === undefined) return false;
 
+                const threshold = condition.threshold;
                 switch (condition.mode) {
                     case 0: // Equals
-                        return paramValue === threshold;
+                        return Math.abs(paramValue - (threshold as number)) < 0.001;
                     case 1: // Greater
                         return paramValue > threshold;
                     case 2: // Less
                         return paramValue < threshold;
                     case 3: // Not Equal
-                        return paramValue !== threshold;
+                        return Math.abs(paramValue - (threshold as number)) >= 0.001;
+                    case 4: // If (for booleans)
+                        return paramValue === true;
+                    case 5: // IfNot (for booleans)
+                        return paramValue === false;
                     default:
                         return false;
                 }
@@ -351,7 +417,7 @@ export namespace TOOLKIT {
         private setupLayers(): void {
             if (this.machine.layers) {
                 this.machine.layers.forEach((layerData: any, index: number) => {
-                    const layer = new AnimationLayer(layerData, index);
+                    const layer = new AnimationLayer(layerData, index, this.machine);
                     this.layers.push(layer);
                 });
             }
