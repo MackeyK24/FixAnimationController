@@ -56,9 +56,16 @@ import * as BABYLON from 'babylonjs';
 
 12... PLEASE CREATE ALL CODE, NEVER LEAVE UN-IMPLEMENTED FUNCTIONS
 
+
 Please evaluate my existing `AnimationState.ts` and `machine.json` file from the repo to understand the structure of the machine property.
 
-MOST IMPORTANT... All the information you need is in the `machine.json` machine object which is currently working using my legacy TOOLKIT.AnimationState class. It just has performance issues, hence us making a new TOOLKIT.AnimationController from scratch to fix those issues.
+# IMPORTANT
+
+KEEP IT SIMPLE, DONT WAST ACU AND TIME WITH TEST
+
+FOCUS ON SAMPLING THE ANIMATION CLIPS, BLENDING THE VALUES FROM LAYERS USING AVATAR MASK
+
+All the information you need is in the `machine.json` machine object which is currently working using my legacy TOOLKIT.AnimationState class. It just has performance issues, hence us making a new TOOLKIT.AnimationController from scratch to fix those issues.
 
 # DOCUMENTATION
 
