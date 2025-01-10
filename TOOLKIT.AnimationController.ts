@@ -1,7 +1,7 @@
 import * as BABYLON from 'babylonjs';
 
 /** Babylon Toolkit Namespace */
-export namespace TOOLKIT {
+namespace TOOLKIT {
     export enum MotionType {
         Clip = 0,
         Tree = 1
