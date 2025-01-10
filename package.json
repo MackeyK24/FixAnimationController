@@ -1,0 +1,17 @@
+{
+  "name": "fix-animation-controller",
+  "version": "1.0.0",
+  "description": "Fix for Unity-like animation controller in Babylon.js",
+  "dependencies": {
+    "@babylonjs/core": "^6.49.0",
+    "@babylonjs/materials": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "typescript": "^5.2.2"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  }
+}
