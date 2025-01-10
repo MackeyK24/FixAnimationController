@@ -84,7 +84,7 @@ Support for multiple animation layers with avatar masks:
         {
             "name": "Base",
             "defaultWeight": 1.0,
-            "defaultState": "Idle"
+            "entry": "Idle"
         },
         {
             "name": "UpperBody",
@@ -153,7 +153,7 @@ The `machine.json` file defines the animation state machine structure:
         {
             "name": "Base",
             "defaultWeight": 1.0,
-            "defaultState": "Idle",
+            "entry": "Idle",
             "stateMachine": {
                 "states": [
                     {

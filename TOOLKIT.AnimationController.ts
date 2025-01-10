@@ -111,9 +111,9 @@ export namespace TOOLKIT {
                 });
             }
 
-            // Set initial state
-            if (layerData.defaultState) {
-                this.setState(layerData.defaultState);
+            // Set initial state from entry point
+            if (layerData.entry) {
+                this.setState(layerData.entry);
             }
         }
 
