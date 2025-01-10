@@ -491,35 +491,7 @@ export namespace TOOLKIT {
      * @param value Parameter value
      */
     public setParameter(name: string, value: number | boolean): void {
-        const paramType = this.parameters.get(name);
-        if (!paramType) {
-            throw new Error(`Parameter ${name} not found`);
-        }
-
-        // Validate value type
-        switch (paramType) {
-            case AnimatorParameterType.Float:
-            case AnimatorParameterType.Int:
-                if (typeof value !== 'number') {
-                    throw new Error(`Parameter ${name} expects a number value`);
-                }
-                // Convert to integer for Int parameters
-                this._parameterValues.set(name, paramType === AnimatorParameterType.Int ? Math.floor(value) : value);
-                break;
-            case AnimatorParameterType.Bool:
-            case AnimatorParameterType.Trigger:
-                if (typeof value !== 'boolean') {
-                    throw new Error(`Parameter ${name} expects a boolean value`);
-                }
-                this._parameterValues.set(name, value);
-                // Auto-reset triggers after one frame
-                if (paramType === AnimatorParameterType.Trigger && value) {
-                    setTimeout(() => this._parameterValues.set(name, false), this.frameTime * 1000);
-                }
-                break;
-            default:
-                throw new Error(`Unsupported parameter type: ${paramType}`);
-        }
+        this._parameterValues.set(name, value);
     }
 
     /**
