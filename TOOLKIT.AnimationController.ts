@@ -390,11 +390,9 @@ namespace TOOLKIT {
      * Update animation states and blend trees
      * Should be called each frame in the render loop
      */
-    public update(): void {
-        // Calculate delta time
-        const currentTime = BABYLON.Tools.Now;
-        this.deltaTime = (currentTime - this.lastFrameTime) / 1000.0;
-        this.lastFrameTime = currentTime;
+    public update(deltaTime:number): void {
+        this.deltaTime = deltaTime;
+        this.lastFrameTime = this.currentTime;
         this.currentTime += this.deltaTime;
 
         // Update each layer
@@ -510,6 +508,15 @@ namespace TOOLKIT {
      */
     public getParameter(name: string): number | boolean | undefined {
         return this._parameterValues.get(name);
+    }
+
+    /**
+     * Has a parameter defined
+     * @param name Parameter name
+     * @returns Has a parameter defined
+     */
+    public hasParameter(name: string): boolean {
+        return this._parameterValues.has(name);
     }
 
     /**
